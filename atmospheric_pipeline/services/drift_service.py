@@ -1,0 +1,97 @@
+"""
+Drift Detection Service - Kolmogorov-Smirnov Test
+-------------------------------------------------
+Compares rolling window distribution vs baseline using KS test.
+Logs drift if p-value < threshold (configurable).
+"""
+
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy import stats as scipy_stats
+
+logger = logging.getLogger(__name__)
+
+
+def load_drift_config(config: dict) -> dict:
+    """Extract drift detection parameters from config."""
+    drift = config.get("drift", {})
+    return {
+        "p_value_threshold": drift.get("p_value_threshold", 0.05),
+        "baseline_window": drift.get("baseline_window", 100),
+        "comparison_window": drift.get("comparison_window", 50),
+    }
+
+
+def ks_drift_test(
+    baseline: np.ndarray,
+    comparison: np.ndarray,
+    p_threshold: float = 0.05,
+) -> tuple[bool, float]:
+    """
+    Perform Kolmogorov-Smirnov test between baseline and comparison samples.
+
+    Args:
+        baseline: Baseline distribution sample
+        comparison: Current window to compare
+        p_threshold: Threshold below which we declare drift
+
+    Returns:
+        (drift_detected, p_value)
+    """
+    if len(baseline) < 10 or len(comparison) < 10:
+        return False, 1.0
+    try:
+        stat, p_value = scipy_stats.ks_2samp(baseline, comparison)
+        return p_value < p_threshold, float(p_value)
+    except Exception as e:
+        logger.warning("KS test failed: %s", e)
+        return False, 1.0
+
+
+def run_drift_detection(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """
+    Run drift detection on sensor columns. Log drift events.
+
+    Args:
+        df: DataFrame with sensor data (temperature_filt, etc.)
+        config: Pipeline configuration
+
+    Returns:
+        Same DataFrame (drift detection is side-effect: logging)
+    """
+    if df.empty or len(df) < 50:
+        logger.info("Insufficient data for drift detection (need >= 50 rows)")
+        return df.copy()
+
+    cfg = load_drift_config(config)
+    p_thresh = cfg["p_value_threshold"]
+    baseline_n = min(cfg["baseline_window"], len(df) // 2)
+    comp_n = min(cfg["comparison_window"], len(df) - baseline_n)
+
+    if baseline_n < 10 or comp_n < 10:
+        return df.copy()
+
+    result = df.copy()
+    sensor_cols = []
+    for c in ["temperature", "humidity", "pressure"]:
+        if f"{c}_filt" in df.columns:
+            sensor_cols.append(f"{c}_filt")
+        elif c in df.columns:
+            sensor_cols.append(c)
+
+    for col in sensor_cols:
+        baseline = result[col].iloc[:baseline_n].dropna().values
+        comparison = result[col].iloc[-comp_n:].dropna().values
+        drifted, p_val = ks_drift_test(baseline, comparison, p_thresh)
+        if drifted:
+            logger.warning("DRIFT DETECTED: %s (p=%.4f < %.4f)", col, p_val, p_thresh)
+
+    return result
+
+
+def run_drift_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Main entry point for drift service."""
+    return run_drift_detection(df, config)

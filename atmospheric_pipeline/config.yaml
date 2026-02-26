@@ -1,0 +1,56 @@
+# Atmospheric Monitoring Pipeline - Configuration
+# ----------------------------------------------
+# Central configuration for all pipeline services.
+
+# Sensor bounds for validation (configurable per sensor)
+sensor_bounds:
+  temperature:
+    min: -40.0   # °C (extreme cold)
+    max: 60.0    # °C (extreme heat)
+  humidity:
+    min: 0.0     # %RH
+    max: 100.0   # %RH
+  pressure:
+    min: 800.0   # hPa
+    max: 1100.0  # hPa
+
+# Rolling window for feature engineering
+feature_engineering:
+  rolling_window: 5
+
+# Filter parameters
+filtering:
+  median_window: 5
+  kalman:
+    # Base values; adaptive filter auto-adjusts Q/R based on variance
+    process_variance: 0.01
+    measurement_variance: 0.5
+    estimated_error: 1.0
+
+# Model parameters
+model:
+  isolation_forest:
+    contamination: 0.04
+    random_state: 42
+  z_score:
+    threshold: 3.0   # standard deviations
+  seasonal_decomposition:
+    period: 24       # hourly seasonality (change for different granularity)
+    model: additive  # additive | multiplicative
+
+# Drift detection (Kolmogorov-Smirnov test)
+drift:
+  p_value_threshold: 0.05
+  baseline_window: 100   # rows for baseline distribution
+  comparison_window: 50  # rolling window to compare against baseline
+
+# Paths
+paths:
+  input_stream: "data/stream"
+  master_csv: "data/master_sensor_data.csv"
+  output_csv: "output/anomaly_results.csv"
+  invalid_log: "logs/invalid_rows.log"
+
+# Alert service
+alerts:
+  slack_webhook_url: ""  # Set SLACK_WEBHOOK_URL env var or add URL here

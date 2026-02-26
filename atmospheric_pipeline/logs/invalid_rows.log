@@ -1,0 +1,3 @@
+Invalid row: {'index': 25, 'row': {'timestamp': Timestamp('2025-01-02 01:00:00'), 'temperature': 25.22184517941973, 'humidity': 150.0, 'pressure': 1009.3574341616368}, 'violations': ['humidity=150.0 above max 100.0']}
+Invalid row: {'index': 60, 'row': {'timestamp': Timestamp('2025-01-03 12:00:00'), 'temperature': 24.04165152430942, 'humidity': 62.85445255346583, 'pressure': 500.0}, 'violations': ['pressure=500.0 below min 800.0']}
+Invalid row: {'index': 80, 'row': {'timestamp': Timestamp('2025-01-04 08:00:00'), 'temperature': 70.0, 'humidity': 56.34816684141432, 'pressure': 1010.4808344734575}, 'violations': ['temperature=70.0 above max 60.0']}

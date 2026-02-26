@@ -1,0 +1,9 @@
+# Prometheus config for scraping atmospheric pipeline metrics
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: atmospheric_pipeline
+    static_configs:
+      - targets: ["atmospheric_app:8000"]
+    metrics_path: /metrics
