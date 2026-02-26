@@ -1,116 +1,120 @@
 # Atmospheric Monitoring Pipeline
 
-## Overview
-
-This project implements an end-to-end atmospheric monitoring and anomaly
-detection pipeline using signal filtering, feature engineering, machine
-learning, and workflow automation.
-
-It integrates: - Median + Kalman filtering - Rolling statistical feature
-extraction - Isolation Forest anomaly detection - Flask REST API -
-Airflow orchestration
+Production-ready modular atmospheric monitoring and anomaly detection system.
 
 ## Architecture
 
-    Weather Data (Meteostat)
-            ↓
-    Median + Kalman Filter
-            ↓
-    Feature Engineering
-            ↓
-    Isolation Forest (ML)
-            ↓
-    CSV / API / Airflow
+```
+Sensor CSV Stream (Temperature, Humidity, Pressure)
+    ↓
+Data Validation Layer
+    ↓
+Filtering Service (Median Filter + Adaptive Kalman Filter)
+    ↓
+Feature Engineering Service
+    ↓
+Model Service (Seasonal Decomposition + Isolation Forest + Z-score)
+    ↓
+Drift Detection (Kolmogorov-Smirnov Test)
+    ↓
+Anomaly Output CSV
+    ↓
+Alert Service (Slack Webhook ready)
+    ↓
+Metrics exposed for Grafana
+```
 
 ## Project Structure
 
-    atmospheric_pipeline/
-    ├── feature_extractor.py
-    ├── filters.py
-    ├── pipeline.py
-    ├── app.py
-    └── dags/
-        └── atmospheric_dag.py
-
-## Requirements
-
--   Python 3.9+
--   pandas
--   numpy
--   scikit-learn
--   meteostat
--   flask
--   apache-airflow
--   matplotlib
-
-Install dependencies:
-
-``` bash
-pip install -r requirements.txt
+```
+atmospheric_pipeline/
+├── services/
+│   ├── ingestion_service.py
+│   ├── validation_service.py
+│   ├── filtering_service.py
+│   ├── feature_service.py
+│   ├── model_service.py
+│   ├── drift_service.py
+│   ├── alert_service.py
+├── config.yaml
+├── main_pipeline.py
+├── app.py
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yaml
+├── prometheus.yml
+└── dags/
+    └── atmospheric_dag.py
 ```
 
-## Running the Pipeline
+## Quick Start
 
 ### Local Execution
 
-``` bash
-python pipeline.py
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Generate sample stream data (optional)
+python scripts/generate_sample_stream.py
+
+# Run pipeline
+python main_pipeline.py
 ```
 
 ### Flask API
 
-``` bash
+```bash
 python app.py
 ```
 
-Endpoints:
+- **GET /run** – Execute pipeline and return anomaly summary
+- **GET /health** – Health check
+- **GET /metrics** – Prometheus metrics for Grafana
 
--   GET /run
--   GET /health
+### Docker
 
-### Airflow Deployment
+```bash
+# Build and run app only
+docker build -t atmospheric-pipeline .
+docker run -p 8000:8000 atmospheric-pipeline python app.py
 
-1.  Copy project to: /opt/airflow/atmospheric_pipeline
+# Full stack (app, Airflow, Redis, Prometheus, Grafana)
+docker-compose up -d
 
-2.  Copy DAG: /opt/airflow/dags/
-
-3.  Restart Airflow services
-
-### Cron Automation
-
-``` bash
-0 2 * * * cd /app/atmospheric_pipeline && python pipeline.py
+# Initialize Airflow DB (first time only)
+docker-compose run airflow-webserver airflow db init
 ```
+
+### Airflow DAG
+
+Copy `dags/atmospheric_dag.py` to your Airflow dags folder, or use the docker-compose volume mount. Schedule: daily (configurable to hourly in the DAG).
+
+## Configuration
+
+Edit `config.yaml` for:
+
+- Sensor bounds (temperature, humidity, pressure)
+- Rolling window size
+- Isolation Forest contamination
+- Z-score threshold
+- KS p-value threshold for drift
+- Paths (input stream, master CSV, output, logs)
+- Slack webhook URL (or set `SLACK_WEBHOOK_URL` env var)
 
 ## Output
 
--   anomaly_results.csv
--   API JSON response
--   Airflow logs
+- `output/anomaly_results.csv` – Anomaly results with all features and flags
+- `logs/invalid_rows.log` – Logged invalid sensor rows
+- API JSON response (from `/run`)
+- Airflow task logs
 
-## Machine Learning
+## Ports
 
-Algorithm: - Isolation Forest
-
-Features: - Rolling mean, std, skew, kurtosis - Gradients - Energy
-metrics - Composite ratios
-
-## Use Cases
-
--   Weather anomaly monitoring
--   Environmental research
--   Smart city systems
--   Sensor diagnostics
--   Climate analytics
-
-## Future Enhancements
-
--   Docker + Kubernetes
--   MLflow integration
--   Kafka streaming
--   Grafana dashboards
--   Cloud deployment (AWS/GCP)
-
-## Author
-
-Vedang Kane
+| Service            | Port |
+|--------------------|------|
+| Atmospheric App    | TBD |
+| Airflow Webserver  | TBD |
+| Grafana            | TBD |
+| Prometheus         | TBD |
+| Redis              | TBD|
