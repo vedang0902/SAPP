@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from flask import Flask, jsonify
+import pandas as pd
 
 # Project root
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -49,6 +50,22 @@ if PROMETHEUS_AVAILABLE:
         "atmospheric_pipeline_records_total",
         "Total records processed in last run",
     )
+    # Hybrid forecasting metrics (RMSE, MAE, variance, training time) are
+    # populated by prediction_service and exposed via /metrics
+
+
+@app.route("/")
+def index():
+    """Landing page with available endpoints."""
+    return jsonify({
+        "service": "Atmospheric Monitoring Pipeline",
+        "endpoints": {
+            "/": "This page",
+            "/run": "Execute pipeline (GET)",
+            "/health": "Health check (GET)",
+            "/metrics": "Prometheus metrics (GET)",
+        },
+    })
 
 
 @app.route("/run", methods=["GET"])

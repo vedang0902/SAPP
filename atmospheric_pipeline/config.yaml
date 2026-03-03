@@ -38,6 +38,21 @@ model:
     period: 24       # hourly seasonality (change for different granularity)
     model: additive  # additive | multiplicative
 
+# Hybrid Prediction (SARIMA + LSTM ensemble)
+prediction:
+  horizon: 5
+  sarima_order: [1, 1, 1]
+  seasonal_order: [1, 1, 1, 24]
+  lstm:
+    epochs: 10
+    batch_size: 32
+    lookback: 20
+  ensemble_weights:
+    sarima: 0.5
+    lstm: 0.5
+  forecast_error_threshold: 2.5
+  error_window: 20   # Rolling window for forecast error mean/std
+
 # Drift detection (Kolmogorov-Smirnov test)
 drift:
   p_value_threshold: 0.05

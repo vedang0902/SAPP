@@ -20,6 +20,8 @@ from services.ingestion_service import run_ingestion
 from services.validation_service import run_validation
 from services.filtering_service import run_filtering
 from services.feature_service import run_feature_engineering
+from services.seasonal_decomposition_service import run_seasonal_decomposition
+from services.prediction_service import run_prediction_service
 from services.model_service import run_model_service
 from services.drift_service import run_drift_service
 from services.alert_service import run_alert_service
@@ -119,20 +121,28 @@ def run_pipeline(config: dict = None) -> pd.DataFrame:
         logger.warning("Pipeline aborted: no rows after feature engineering")
         return pd.DataFrame()
 
-    # 5. Model (Anomaly Detection)
-    logger.info("=== Step 5: Model Service ===")
+    # 5. Seasonal Decomposition
+    logger.info("=== Step 5: Seasonal Decomposition ===")
+    df = run_seasonal_decomposition(df, config)
+
+    # 6. Hybrid Prediction
+    logger.info("=== Step 6: Hybrid Prediction ===")
+    df = run_prediction_service(df, config, PROJECT_ROOT)
+
+    # 7. Model (Hybrid Anomaly Detection)
+    logger.info("=== Step 7: Model Service ===")
     df = run_model_service(df, config)
 
-    # 6. Drift Detection
-    logger.info("=== Step 6: Drift Detection ===")
-    df = run_drift_service(df, config)
+    # 8. Drift Detection
+    logger.info("=== Step 8: Drift Detection ===")
+    df = run_drift_service(df, config, PROJECT_ROOT)
 
-    # 7. Save Output
-    logger.info("=== Step 7: Save Output ===")
+    # 9. Save Output
+    logger.info("=== Step 9: Save Output ===")
     save_output(df, config)
 
-    # 8. Alerts
-    logger.info("=== Step 8: Alert Service ===")
+    # 10. Alerts
+    logger.info("=== Step 10: Alert Service ===")
     run_alert_service(df, config)
 
     logger.info("=== Pipeline Complete ===")

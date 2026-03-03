@@ -85,25 +85,47 @@ def atmospheric_dag():
         return df.to_json(date_format="iso") if not df.empty else "{}"
 
     @task
-    def model_task(feature_json: str):
-        from services.model_service import run_model_service
+    def seasonal_decompose_task(feature_json: str):
+        from services.seasonal_decomposition_service import run_seasonal_decomposition
         from main_pipeline import load_config
         config = load_config()
         if feature_json == "{}":
             return "{}"
         df = pd.read_json(feature_json)
+        df = run_seasonal_decomposition(df, config)
+        return df.to_json(date_format="iso") if not df.empty else "{}"
+
+    @task
+    def prediction_task(seasonal_json: str):
+        from services.prediction_service import run_prediction_service
+        from main_pipeline import load_config, PROJECT_ROOT
+        config = load_config()
+        if seasonal_json == "{}":
+            return "{}"
+        df = pd.read_json(seasonal_json)
+        df = run_prediction_service(df, config, PROJECT_ROOT)
+        return df.to_json(date_format="iso") if not df.empty else "{}"
+
+    @task
+    def model_task(prediction_json: str):
+        from services.model_service import run_model_service
+        from main_pipeline import load_config
+        config = load_config()
+        if prediction_json == "{}":
+            return "{}"
+        df = pd.read_json(prediction_json)
         df = run_model_service(df, config)
         return df.to_json(date_format="iso")
 
     @task
     def drift_task(model_json: str):
         from services.drift_service import run_drift_service
-        from main_pipeline import load_config
+        from main_pipeline import load_config, PROJECT_ROOT
         config = load_config()
         if model_json == "{}":
             return "{}"
         df = pd.read_json(model_json)
-        df = run_drift_service(df, config)
+        df = run_drift_service(df, config, PROJECT_ROOT)
         return df.to_json(date_format="iso")
 
     @task
@@ -126,12 +148,14 @@ def atmospheric_dag():
         df = pd.read_json(drift_json)
         run_alert_service(df, config)
 
-    # Task flow
+    # Task flow: ingest → validate → filter → feature → seasonal_decompose → prediction → anomaly_detection → drift → alert
     ing = ingestion_task()
     val = validation_task(ing)
     flt = filtering_task(val)
     feat = feature_task(flt)
-    mod = model_task(feat)
+    seasonal = seasonal_decompose_task(feat)
+    pred = prediction_task(seasonal)
+    mod = model_task(pred)
     drf = drift_task(mod)
     output_task(drf)
     alert_task(drf)

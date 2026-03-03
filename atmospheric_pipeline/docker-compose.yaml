@@ -17,6 +17,30 @@ services:
     environment:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
 
+  # Airflow init: initialize DB and create admin user (runs once, then exits)
+  airflow-init:
+    image: apache/airflow:2.7.3-python3.10
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - _AIRFLOW_WWW_USER_USERNAME=airflow
+      - _AIRFLOW_WWW_USER_PASSWORD=airflow
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - .:/opt/airflow/atmospheric_pipeline
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: "50000:0"
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username airflow --password airflow --firstname Admin --lastname User --role Admin --email admin@example.org || true
+      "
+    restart: "no"
+
   airflow-webserver:
     image: apache/airflow:2.7.3-python3.10
     ports:
@@ -30,7 +54,8 @@ services:
       - ./dags:/opt/airflow/dags
       - .:/opt/airflow/atmospheric_pipeline
     depends_on:
-      - postgres
+      airflow-init:
+        condition: service_completed_successfully
     user: "50000:0"
     command: webserver
 
@@ -45,7 +70,8 @@ services:
       - ./dags:/opt/airflow/dags
       - .:/opt/airflow/atmospheric_pipeline
     depends_on:
-      - postgres
+      airflow-init:
+        condition: service_completed_successfully
     user: "50000:0"
     command: scheduler
 

@@ -1,8 +1,9 @@
 """
-Model Service - Seasonal Decomposition + Isolation Forest + Z-score
-------------------------------------------------------------------
+Model Service - Hybrid Anomaly Detection
+---------------------------------------
 Combines anomaly detection: seasonal decomposition residual, Isolation Forest,
-and Z-score thresholding. Final anomaly flag is combined from all methods.
+Z-score thresholding, and forecast-error-based detection.
+An anomaly is flagged if ANY of: Isolation Forest, Z-score, or forecast error > threshold.
 """
 
 import logging
@@ -63,15 +64,17 @@ def zscore_anomaly(series: pd.Series, threshold: float = 3.0) -> np.ndarray:
 
 def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
-    Run anomaly detection: seasonal decomposition + Isolation Forest + Z-score.
-    Combine flags: anomaly if ANY method flags it.
+    Run hybrid anomaly detection: Isolation Forest + Z-score + seasonal residual + forecast error.
+    An anomaly is flagged if ANY of: Isolation Forest, Z-score, residual, or forecast error > threshold.
 
     Args:
-        df: DataFrame with features (must have temperature, humidity, pressure or _filt variants)
+        df: DataFrame with features (must have temperature, humidity, pressure or _filt variants).
+            If forecast_error present (from prediction_service), used for forecast-based anomaly.
         config: Pipeline configuration
 
     Returns:
-        DataFrame with anomaly columns: anomaly_iforest, anomaly_zscore, anomaly_residual, anomaly_combined
+        DataFrame with anomaly columns: anomaly_iforest, anomaly_zscore, anomaly_residual,
+        anomaly_forecast_error, anomaly_combined
     """
     if df.empty:
         return df.copy()
@@ -85,6 +88,10 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     z_threshold = z_cfg.get("threshold", 3.0)
     period = sd_cfg.get("period", 24)
     model_type = sd_cfg.get("model", "additive")
+
+    # Forecast error threshold (from prediction config if available)
+    pred_cfg = config.get("prediction", {})
+    forecast_error_threshold = pred_cfg.get("forecast_error_threshold", 2.5)
 
     result = df.copy()
 
@@ -113,29 +120,46 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         z_flags |= zscore_anomaly(result[col], z_threshold).astype(int)
     result["anomaly_zscore"] = z_flags
 
-    # 3. Seasonal decomposition residual (use primary column, e.g. temperature)
+    # 3. Seasonal decomposition residual (use pre-computed if available from seasonal_decomposition_service)
     primary = use_cols[0]
-    resid = seasonal_decomposition_residual(result[primary], period=period, model=model_type)
-    if resid.notna().any():
+    primary_base = primary.replace("_filt", "")
+    resid = None
+    if f"{primary_base}_residual" in result.columns and result[f"{primary_base}_residual"].notna().any():
+        resid = result[f"{primary_base}_residual"]
+    else:
+        resid = seasonal_decomposition_residual(result[primary], period=period, model=model_type)
+
+    if resid is not None and resid.notna().any():
         res_flags = zscore_anomaly(resid.dropna(), z_threshold)
-        # Map back to full index
         result["anomaly_residual"] = 0
         valid_idx = resid.dropna().index
         result.loc[valid_idx, "anomaly_residual"] = res_flags.astype(int)
     else:
         result["anomaly_residual"] = 0
 
-    # 4. Combined: anomaly if any method flags
+    # 4. Forecast-error-based anomaly (if prediction_service ran and added forecast_error)
+    if "forecast_error" in result.columns:
+        result["anomaly_forecast_error"] = (
+            result["forecast_error"] > forecast_error_threshold
+        ).astype(int)
+    else:
+        result["anomaly_forecast_error"] = 0
+
+    # 5. Combined: anomaly if ANY method flags
     result["anomaly_combined"] = (
-        (result["anomaly_iforest"] | result["anomaly_zscore"] | result["anomaly_residual"])
+        result["anomaly_iforest"]
+        | result["anomaly_zscore"]
+        | result["anomaly_residual"]
+        | result["anomaly_forecast_error"]
     ).astype(int)
-    result["anomaly"] = result["anomaly_combined"].map(lambda x: -1 if x == 1 else 1)  # -1 = outlier for compatibility
+    result["anomaly"] = result["anomaly_combined"].map(lambda x: -1 if x == 1 else 1)
 
     logger.info(
-        "Model service: IF=%d, Z=%d, Resid=%d, Combined=%d anomalies",
+        "Model service: IF=%d, Z=%d, Resid=%d, ForecastErr=%d, Combined=%d anomalies",
         result["anomaly_iforest"].sum(),
         result["anomaly_zscore"].sum(),
         result["anomaly_residual"].sum(),
+        result["anomaly_forecast_error"].sum(),
         result["anomaly_combined"].sum(),
     )
     return result
