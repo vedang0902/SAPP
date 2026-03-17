@@ -1,6 +1,6 @@
 # Atmospheric Monitoring Pipeline
 
-Production-ready modular atmospheric monitoring and anomaly detection system.
+Production-ready modular atmospheric monitoring and anomaly detection system .
 
 ## Architecture
 
