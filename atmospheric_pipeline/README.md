@@ -187,6 +187,6 @@ Access via `GET /metrics` when running the Flask app. Configure Prometheus to sc
 |--------------------|------|
 | Atmospheric App    | 8000 |
 | Airflow Webserver  | 8082 |
-| Grafana            | 3000 |
+| Grafana            | 4000 |
 | Prometheus         | 9090 |
 | Redis              | 6379 |

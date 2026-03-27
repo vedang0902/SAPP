@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -36,13 +35,67 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Fallback configuration used when PyYAML is not installed.
+# This lets the app run in environments where installing `tensorflow`/other
+# heavy deps (from requirements.txt) would be problematic.
+DEFAULT_CONFIG = {
+    "sensor_bounds": {
+        "temperature": {"min": -40.0, "max": 60.0},
+        "humidity": {"min": 0.0, "max": 100.0},
+        "pressure": {"min": 800.0, "max": 1100.0},
+    },
+    "feature_engineering": {"rolling_window": 5},
+    "filtering": {
+        "median_window": 5,
+        "kalman": {
+            "process_variance": 0.01,
+            "measurement_variance": 0.5,
+            "estimated_error": 1.0,
+        },
+    },
+    "model": {
+        "isolation_forest": {"contamination": 0.04, "random_state": 42},
+        "z_score": {"threshold": 3.0},
+        "seasonal_decomposition": {"period": 24, "model": "additive"},
+    },
+    "prediction": {
+        "horizon": 5,
+        "sarima_order": [1, 1, 1],
+        "seasonal_order": [1, 1, 1, 24],
+        "lstm": {"epochs": 10, "batch_size": 32, "lookback": 20},
+        "ensemble_weights": {"sarima": 0.5, "lstm": 0.5},
+        "forecast_error_threshold": 2.5,
+        "error_window": 20,
+    },
+    "drift": {
+        "p_value_threshold": 0.05,
+        "baseline_window": 100,
+        "comparison_window": 50,
+    },
+    "paths": {
+        "input_stream": "data/stream",
+        "master_csv": "data/master_sensor_data.csv",
+        "output_csv": "output/anomaly_results.csv",
+        "invalid_log": "logs/invalid_rows.log",
+    },
+    "alerts": {"slack_webhook_url": ""},
+}
+
 
 def load_config(config_path: str = None) -> dict:
     """Load configuration from YAML file."""
     if config_path is None:
         config_path = PROJECT_ROOT / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        import yaml  # optional dependency
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except ModuleNotFoundError:
+        logger.warning(
+            "PyYAML not installed; using DEFAULT_CONFIG instead of %s.", config_path
+        )
+        return DEFAULT_CONFIG
 
 
 def save_output(df: pd.DataFrame, config: dict) -> str:

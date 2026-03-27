@@ -1,6 +1,6 @@
 # Atmospheric Pipeline - Docker Compose
 # Services: atmospheric_app, airflow, redis, grafana
-# Ports: 8000 (app), 8080 (airflow), 3000 (grafana)
+# Ports: 8000 (app), 8080 (airflow), 4000 (grafana)
 
 version: "3.8"
 
@@ -109,7 +109,7 @@ services:
   grafana:
     image: grafana/grafana:10.2.2
     ports:
-      - "3000:3000"
+      - "4000:4000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
