@@ -1,0 +1,49 @@
+# 🧠 Python cache / junk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 🧪 Virtual environments
+venv/
+.env/
+.venv/
+
+# 📦 Build / packaging
+build/
+dist/
+*.egg-info/
+
+# 🧾 Logs
+*.log
+
+# 🧠 ML Models (BIG files - DO NOT COMMIT)
+*.pkl
+*.joblib
+*.h5
+*.keras
+*.pt
+*.onnx
+*.bin
+
+# 📊 Data files (optional - adjust if needed)
+*.csv
+*.parquet
+
+# ⚙️ OS junk
+.DS_Store
+Thumbs.db
+
+# 🐳 Docker
+*.tar
+
+# 🔐 Secrets / configs
+.env
+*.env
+
+# 🧠 Jupyter
+.ipynb_checkpoints/
+
+# 🧱 IDE stuff
+.vscode/
+.idea/
