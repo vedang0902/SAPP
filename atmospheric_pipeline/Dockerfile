@@ -5,15 +5,18 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+ENV PYTHONUNBUFFERED=1
+
 # Install dependencies (tensorflow, statsmodels, scikit-learn, etc.)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Verify critical packages
-RUN python -c "import tensorflow; import statsmodels; print('OK: tensorflow, statsmodels')"
-
 # Copy project
 COPY . .
 
+RUN mkdir -p data output logs models
+
+EXPOSE 8000
+
 # Run main pipeline by default
-CMD ["python", "main_pipeline.py"]
+CMD ["python", "app.py"]

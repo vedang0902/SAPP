@@ -30,6 +30,7 @@ except ImportError:
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
+app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1", "atmospheric_app", "*"]
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",

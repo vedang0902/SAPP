@@ -16,10 +16,15 @@ services:
       - ./logs:/app/logs
     environment:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD:-}
+      - ALERT_SENDER_EMAIL=${ALERT_SENDER_EMAIL:-}
+      - ALERT_RECEIVER_EMAILS=${ALERT_RECEIVER_EMAILS:-}
 
   # Airflow init: initialize DB and create admin user (runs once, then exits)
   airflow-init:
-    image: apache/airflow:2.7.3-python3.10
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -42,9 +47,11 @@ services:
     restart: "no"
 
   airflow-webserver:
-    image: apache/airflow:2.7.3-python3.10
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     ports:
-      - "8080:8080"
+      - "8082:8080"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -60,7 +67,9 @@ services:
     command: webserver
 
   airflow-scheduler:
-    image: apache/airflow:2.7.3-python3.10
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -109,7 +118,7 @@ services:
   grafana:
     image: grafana/grafana:10.2.2
     ports:
-      - "4000:4000"
+      - "4000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
