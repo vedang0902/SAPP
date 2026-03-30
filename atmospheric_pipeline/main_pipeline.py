@@ -5,6 +5,7 @@ Orchestrates all services sequentially:
   Ingestion -> Validation -> Filtering -> Feature Engineering -> Model -> Drift -> Output -> Alerts
 """
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -35,6 +36,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+OUTPUT_DIR = PROJECT_ROOT / "output"
+METRICS_SNAPSHOT_PATH = OUTPUT_DIR / "metrics_snapshot.json"
+INGESTION_STATE_PATH = OUTPUT_DIR / "ingestion_state.json"
 
 # Fallback configuration used when PyYAML is not installed.
 # This lets the app run in environments where installing `tensorflow`/other
@@ -108,6 +112,54 @@ def save_output(df: pd.DataFrame, config: dict) -> str:
     df.to_csv(full_path, index=False)
     logger.info("Output saved to %s", full_path)
     return str(full_path)
+
+
+def _read_json(path: Path) -> dict:
+    """Read a small JSON file if it exists."""
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to read %s: %s", path, e)
+        return {}
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    """Persist a small JSON payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+
+
+def write_metrics_snapshot(df: pd.DataFrame, project_root: Path = PROJECT_ROOT) -> dict:
+    """Write a shared metrics snapshot for Prometheus to consume."""
+    output_dir = project_root / "output"
+    metrics_path = output_dir / "metrics_snapshot.json"
+    ingestion_path = output_dir / "ingestion_state.json"
+
+    existing = _read_json(metrics_path)
+    ingestion_state = _read_json(ingestion_path)
+
+    if "anomaly_combined" in df.columns:
+        anomaly_count = int((df["anomaly_combined"] == 1).sum())
+    elif "anomaly" in df.columns:
+        anomaly_count = int((df["anomaly"] == -1).sum())
+    else:
+        anomaly_count = 0
+
+    payload = {
+        "pipeline_runs_total_increment": 1,
+        "records_total": int(len(df)),
+        "anomalies": anomaly_count,
+        "new_records_last_run": int(ingestion_state.get("new_records_last_run", 0)),
+        "pipeline_runs_total": int(existing.get("pipeline_runs_total", 0)) + 1,
+    }
+    _write_json(metrics_path, payload)
+    logger.info("Metrics snapshot updated at %s", metrics_path)
+    return payload
 
 
 def run_pipeline(
@@ -209,6 +261,7 @@ def run_pipeline(
     # 9. Save Output
     logger.info("=== Step 9: Save Output ===")
     save_output(df, config)
+    write_metrics_snapshot(df, PROJECT_ROOT)
 
     # 10. Alerts
     logger.info("=== Step 10: Alert Service ===")

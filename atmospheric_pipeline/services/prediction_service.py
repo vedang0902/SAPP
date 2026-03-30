@@ -264,6 +264,23 @@ def _forecast_lstm_window(
     return pred[0]
 
 
+def _fast_window_baseline(window_df: pd.DataFrame, sensor_cols: list, tail_size: int = 3) -> np.ndarray:
+    """
+    Build a cheap per-sensor baseline forecast from the latest observed values.
+
+    Using a tiny rolling mean keeps fast_mode responsive for frequent DAG runs
+    while still producing separate predictions for each sensor.
+    """
+    preds = []
+    for col in sensor_cols:
+        series = pd.to_numeric(window_df[col], errors="coerce").dropna()
+        if series.empty:
+            preds.append(np.nan)
+            continue
+        preds.append(float(series.tail(tail_size).mean()))
+    return np.array(preds, dtype=np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Hybrid Ensemble and Forecast Error
 # ---------------------------------------------------------------------------
@@ -447,6 +464,7 @@ def run_prediction_service(
     for i in range(forecast_start, n):
         window_start = max(0, i - history_limit)
         window = result.iloc[window_start:i]
+        baseline_pred = _fast_window_baseline(window, sensor_cols) if fast_mode else None
         # SARIMA: refit periodically for rolling window accuracy
         sarima_pred_val = None
         if sarima_fitted is not None:
@@ -468,7 +486,12 @@ def run_prediction_service(
             lstm_pred = _forecast_lstm_window(window, sensor_cols, lstm_model, scaler_params, lookback)
 
         for j, col in enumerate(pred_columns):
-            pred_val = _ensemble_predict(sarima_pred_val, lstm_pred, j, weights)
+            if fast_mode and baseline_pred is not None and not np.isnan(baseline_pred[j]):
+                pred_val = float(baseline_pred[j])
+                if j == 0 and sarima_pred_val is not None and not np.isnan(sarima_pred_val):
+                    pred_val = _ensemble_predict(sarima_pred_val, baseline_pred, j, weights)
+            else:
+                pred_val = _ensemble_predict(sarima_pred_val, lstm_pred, j, weights)
             if not np.isnan(pred_val):
                 result.loc[result.index[i], col] = pred_val
 

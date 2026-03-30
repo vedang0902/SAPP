@@ -131,12 +131,13 @@ def atmospheric_dag():
 
     @task
     def output_task(drift_json: str):
-        from main_pipeline import load_config, save_output, PROJECT_ROOT
+        from main_pipeline import load_config, save_output, write_metrics_snapshot, PROJECT_ROOT
         config = load_config()
         if drift_json == "{}":
             return 0
         df = pd.read_json(drift_json)
         save_output(df, config)
+        write_metrics_snapshot(df, PROJECT_ROOT)
         return len(df)
 
     @task

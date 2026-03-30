@@ -6,6 +6,7 @@ when needed, and maintains a deduplicated master CSV for downstream services.
 """
 
 import logging
+import json
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -238,6 +239,19 @@ def load_master_data(master_path: str, base_path: str = ".") -> pd.DataFrame:
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
 
+def _write_ingestion_state(base_path: str, new_records_last_run: int, total_master_records: int) -> None:
+    """Persist shared ingestion state for the metrics endpoint."""
+    path = Path(base_path) / "output" / "ingestion_state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "new_records_last_run": int(new_records_last_run),
+        "total_master_records": int(total_master_records),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    logger.info("Ingestion state updated at %s", path)
+
+
 def run_ingestion(config: dict, base_path: str = ".") -> pd.DataFrame:
     """
     Main entry point: collect from Open-Meteo and append to master CSV.
@@ -250,6 +264,8 @@ def run_ingestion(config: dict, base_path: str = ".") -> pd.DataFrame:
         DataFrame of ingested data (for downstream pipeline use)
     """
     master_csv, input_stream, lookback_days, _ = load_config(config)
+    existing_master_df = load_master_data(master_csv, base_path)
+    existing_count = len(existing_master_df)
 
     api_df = collect_open_meteo_data(lookback_days=lookback_days)
     stream_df = pd.DataFrame(columns=EXPECTED_COLUMNS)
@@ -264,7 +280,19 @@ def run_ingestion(config: dict, base_path: str = ".") -> pd.DataFrame:
 
     master_df = load_master_data(master_csv, base_path)
     if not master_df.empty:
+        _write_ingestion_state(
+            base_path,
+            new_records_last_run=max(len(master_df) - existing_count, 0),
+            total_master_records=len(master_df),
+        )
         return master_df
+
+    if not incoming.empty:
+        _write_ingestion_state(
+            base_path,
+            new_records_last_run=len(incoming),
+            total_master_records=len(incoming),
+        )
 
     return incoming
 
