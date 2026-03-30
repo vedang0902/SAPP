@@ -46,4 +46,6 @@ Thumbs.db
 
 # 🧱 IDE stuff
 .vscode/
-.idea/
+.idea/models/
+*.pkl
+*.keras
