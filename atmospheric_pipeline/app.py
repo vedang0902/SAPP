@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import pandas as pd
 
 # Project root
@@ -73,12 +73,18 @@ def index():
 def run():
     """Execute the pipeline and return anomaly summary."""
     try:
-        df = run_pipeline()
+        refresh_flag = request.args.get("refresh", "").strip().lower()
+        refresh_ingestion = refresh_flag in {"1", "true", "yes"}
+        full_flag = request.args.get("full", "").strip().lower()
+        fast_mode = full_flag not in {"1", "true", "yes"}
+        df = run_pipeline(refresh_ingestion=refresh_ingestion, fast_mode=fast_mode)
         if df.empty:
             return jsonify({
                 "status": "ok",
                 "total_records": 0,
                 "anomalies": 0,
+                "refresh_ingestion": refresh_ingestion,
+                "fast_mode": fast_mode,
                 "message": "No data processed",
             })
         if "anomaly_combined" in df.columns:
@@ -95,6 +101,8 @@ def run():
             "status": "ok",
             "total_records": len(df),
             "anomalies": len(outliers),
+            "refresh_ingestion": refresh_ingestion,
+            "fast_mode": fast_mode,
             "sample": outliers.head(5).to_dict(orient="records"),
         })
     except Exception as e:

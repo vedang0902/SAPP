@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.ingestion_service import run_ingestion
+from services.ingestion_service import load_master_data
 from services.validation_service import run_validation
 from services.filtering_service import run_filtering
 from services.feature_service import run_feature_engineering
@@ -109,12 +110,19 @@ def save_output(df: pd.DataFrame, config: dict) -> str:
     return str(full_path)
 
 
-def run_pipeline(config: dict = None) -> pd.DataFrame:
+def run_pipeline(
+    config: dict = None,
+    refresh_ingestion: bool = True,
+    fast_mode: bool = False,
+) -> pd.DataFrame:
     """
     Run the full atmospheric monitoring pipeline.
 
     Args:
         config: Optional config dict; if None, loads from config.yaml
+        refresh_ingestion: If False, prefer existing master data and skip live
+            ingestion unless no local data exists.
+        fast_mode: If True, use faster approximations for interactive runs.
 
     Returns:
         Final DataFrame with anomaly results
@@ -124,13 +132,21 @@ def run_pipeline(config: dict = None) -> pd.DataFrame:
 
     base_path = str(PROJECT_ROOT)
 
-    # 1. Ingestion
+    # 1. Ingestion / Load Existing Data
     logger.info("=== Step 1: Ingestion ===")
-    df = run_ingestion(config, base_path)
+    df = pd.DataFrame()
+    master_path = config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
+
+    if not refresh_ingestion:
+        df = load_master_data(master_path, base_path)
+        if not df.empty:
+            logger.info("Loaded %d rows from master CSV (refresh disabled)", len(df))
+
+    if df.empty:
+        df = run_ingestion(config, base_path)
 
     # If no stream data, try loading from master CSV as fallback
     if df.empty:
-        master_path = config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
         master_full = PROJECT_ROOT / master_path
         if master_full.exists():
             df = pd.read_csv(master_full)
@@ -180,7 +196,7 @@ def run_pipeline(config: dict = None) -> pd.DataFrame:
 
     # 6. Hybrid Prediction
     logger.info("=== Step 6: Hybrid Prediction ===")
-    df = run_prediction_service(df, config, PROJECT_ROOT)
+    df = run_prediction_service(df, config, PROJECT_ROOT, fast_mode=fast_mode)
 
     # 7. Model (Hybrid Anomaly Detection)
     logger.info("=== Step 7: Model Service ===")

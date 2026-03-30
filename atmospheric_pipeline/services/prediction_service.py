@@ -221,25 +221,35 @@ def _fit_lstm(
     return model, scaler_params
 
 
-def _forecast_lstm(
-    df: pd.DataFrame,
-    sensor_cols: list,
-    model_path: Path,
-    scaler_params: dict,
-    lookback: int,
-    horizon: int,
-) -> np.ndarray:
-    """Generate LSTM forecast for next horizon steps (one value per sensor)."""
+def _load_lstm_model(model_path: Path) -> object:
+    """Load a persisted LSTM model once for reuse."""
     try:
-        import tensorflow as tf
         from tensorflow.keras.models import load_model
     except ImportError:
         return None
 
-    if not model_path.exists() or scaler_params is None:
+    if not model_path.exists():
         return None
 
-    data = df[sensor_cols].values.astype(np.float32)
+    try:
+        return load_model(str(model_path))
+    except Exception as e:
+        logger.warning("Could not load LSTM model: %s", e)
+        return None
+
+
+def _forecast_lstm_window(
+    window_df: pd.DataFrame,
+    sensor_cols: list,
+    lstm_model: object,
+    scaler_params: dict,
+    lookback: int,
+) -> np.ndarray:
+    """Generate LSTM forecast for a single rolling window using a loaded model."""
+    if lstm_model is None or scaler_params is None:
+        return None
+
+    data = window_df[sensor_cols].values.astype(np.float32)
     if len(data) < lookback:
         return None
 
@@ -249,8 +259,7 @@ def _forecast_lstm(
     scaled = (last_window - min_vals) / (max_vals - min_vals + 1e-6)
     X = np.expand_dims(scaled, axis=0)
 
-    model = load_model(str(model_path))
-    pred_scaled = model.predict(X, verbose=0)
+    pred_scaled = lstm_model.predict(X, verbose=0)
     pred = _inv_scale(pred_scaled, min_vals, max_vals)
     return pred[0]
 
@@ -295,6 +304,7 @@ def run_prediction_service(
     df: pd.DataFrame,
     config: dict,
     project_root: Path = None,
+    fast_mode: bool = False,
 ) -> pd.DataFrame:
     """
     Run hybrid SARIMA + LSTM prediction, add forecasts and forecast errors.
@@ -314,6 +324,8 @@ def run_prediction_service(
         df: DataFrame with sensor columns (temperature_filt, humidity_filt, pressure_filt)
         config: Pipeline configuration
         project_root: Project root for model/flag paths
+        fast_mode: When True, prioritize responsiveness over exhaustive rolling
+            prediction by limiting forecast rows and skipping LSTM inference.
 
     Returns:
         DataFrame with forecast_* columns and forecast_error columns
@@ -334,6 +346,8 @@ def run_prediction_service(
     batch_size = lstm_cfg.get("batch_size", 32)
     lookback = lstm_cfg.get("lookback", 20)
     weights = pred_cfg.get("ensemble_weights", {"sarima": 0.5, "lstm": 0.5})
+    history_limit = int(pred_cfg.get("history_limit", 240))
+    max_fast_forecast_rows = int(pred_cfg.get("max_fast_forecast_rows", 96))
 
     sensor_cols = []
     for c in ["temperature", "humidity", "pressure"]:
@@ -349,9 +363,12 @@ def run_prediction_service(
     models_dir.mkdir(parents=True, exist_ok=True)
 
     retrain = _check_drift_triggered(project_root)
+    use_lstm = not fast_mode
     if retrain:
         logger.info("Drift trigger detected - retraining prediction models")
         _clear_drift_flag(project_root)
+    if fast_mode:
+        retrain = False
 
     total_training_time = 0.0
 
@@ -389,7 +406,8 @@ def run_prediction_service(
         except Exception:
             pass
 
-    if retrain or not lstm_path.exists():
+    lstm_model = None
+    if use_lstm and (retrain or not lstm_path.exists()):
         t0 = time.perf_counter()
         lstm_model, scaler_params = _fit_lstm(
             df, sensor_cols, lookback, horizon, epochs, batch_size, lstm_path
@@ -403,9 +421,16 @@ def run_prediction_service(
             except Exception as e:
                 logger.warning("Could not save LSTM scaler: %s", e)
         logger.info("LSTM training time: %.2f s", time.perf_counter() - t0)
+    elif use_lstm:
+        lstm_model = _load_lstm_model(lstm_path)
+
+    if use_lstm and retrain and lstm_path.exists():
+        lstm_model = _load_lstm_model(lstm_path)
 
     # Rolling forecast: refit SARIMA every REFIT_INTERVAL steps for accuracy/speed balance
-    REFIT_INTERVAL = 25
+    REFIT_INTERVAL = int(pred_cfg.get("sarima_refit_interval", 25))
+    if fast_mode:
+        REFIT_INTERVAL = 0
     result = df.copy()
     n = len(result)
     pred_columns = [f"forecast_{c.replace('_filt', '')}" for c in sensor_cols]
@@ -415,9 +440,13 @@ def run_prediction_service(
 
     train_size = max(lookback + horizon, 2 * (seasonal_order[-1] if seasonal_order else 24))
     train_size = min(train_size, n - 1)
+    forecast_start = train_size
+    if fast_mode:
+        forecast_start = max(train_size, n - max_fast_forecast_rows)
 
-    for i in range(train_size, n):
-        window = result.iloc[:i]
+    for i in range(forecast_start, n):
+        window_start = max(0, i - history_limit)
+        window = result.iloc[window_start:i]
         # SARIMA: refit periodically for rolling window accuracy
         sarima_pred_val = None
         if sarima_fitted is not None:
@@ -427,7 +456,7 @@ def run_prediction_service(
                     sarima_pred_val = float(pred.iloc[0])
             except Exception:
                 pass
-            if (i - train_size) % REFIT_INTERVAL == 0 and i > train_size:
+            if REFIT_INTERVAL > 0 and (i - forecast_start) % REFIT_INTERVAL == 0 and i > forecast_start:
                 try:
                     sarima_fitted = _fit_sarima(window[primary].iloc[-150:], sarima_order, seasonal_order)
                 except Exception:
@@ -435,16 +464,17 @@ def run_prediction_service(
 
         # LSTM: sliding window prediction (no refit in loop)
         lstm_pred = None
-        if lstm_path.exists() and scaler_params:
-            lstm_pred = _forecast_lstm(window, sensor_cols, lstm_path, scaler_params, lookback, horizon)
+        if lstm_model is not None and scaler_params:
+            lstm_pred = _forecast_lstm_window(window, sensor_cols, lstm_model, scaler_params, lookback)
 
         for j, col in enumerate(pred_columns):
             pred_val = _ensemble_predict(sarima_pred_val, lstm_pred, j, weights)
             if not np.isnan(pred_val):
                 result.loc[result.index[i], col] = pred_val
 
-    for col in pred_columns:
-        result[col] = result[col].ffill().bfill()
+    if not fast_mode:
+        for col in pred_columns:
+            result[col] = result[col].ffill().bfill()
 
     # Forecast error: use primary sensor for anomaly
     pred_col = pred_columns[0]
