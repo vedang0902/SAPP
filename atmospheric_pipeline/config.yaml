@@ -27,6 +27,11 @@ filtering:
     measurement_variance: 0.5
     estimated_error: 1.0
 
+# Ingestion parameters
+ingestion:
+  history_days: 10       # Open-Meteo archive lookback window
+  interval_seconds: 600  # Continuous ingestion loop interval (10 minutes)
+
 # Model parameters
 model:
   isolation_forest:

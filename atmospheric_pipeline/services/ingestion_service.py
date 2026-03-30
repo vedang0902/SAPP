@@ -72,7 +72,7 @@ def _normalize_sensor_frame(df: pd.DataFrame) -> pd.DataFrame:
         result["city"] = result["city"].fillna("stream")
 
     return result.sort_values(["timestamp", "city"]).drop_duplicates(
-        subset=["timestamp", "city"]
+        subset=["timestamp", "city"], keep="last"
     )
 
 
@@ -82,6 +82,7 @@ def fetch_current(lat: float, lon: float) -> dict:
         "latitude": lat,
         "longitude": lon,
         "current": "temperature_2m,relative_humidity_2m,pressure_msl",
+        "timezone": "auto",
     }
     resp = requests.get(FORECAST_API_URL, params=params, timeout=20)
     resp.raise_for_status()
@@ -90,7 +91,7 @@ def fetch_current(lat: float, lon: float) -> dict:
 
 
 def fetch_history(lat: float, lon: float, lookback_days: int = 10) -> dict:
-    """Fetch hourly weather history for one location."""
+    """Fetch minutely_10 weather history for one location."""
     end_date = datetime.utcnow().date()
     start_date = end_date - timedelta(days=lookback_days)
 
@@ -99,12 +100,13 @@ def fetch_history(lat: float, lon: float, lookback_days: int = 10) -> dict:
         "longitude": lon,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-        "hourly": "temperature_2m,relative_humidity_2m,pressure_msl",
+        "minutely_10": "temperature_2m,relative_humidity_2m,pressure_msl",
+        "timezone": "auto",
     }
     resp = requests.get(ARCHIVE_API_URL, params=params, timeout=30)
     resp.raise_for_status()
     payload = resp.json()
-    return payload.get("hourly", {})
+    return payload.get("minutely_10", {})
 
 
 def collect_open_meteo_data(lookback_days: int = 10) -> pd.DataFrame:
@@ -214,7 +216,7 @@ def append_to_master(df: pd.DataFrame, master_path: str, base_path: str = ".") -
             dedupe_keys.append("city")
         combined = pd.concat([existing, df], ignore_index=True)
         combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-        combined = combined.drop_duplicates(subset=dedupe_keys).sort_values(dedupe_keys)
+        combined = combined.drop_duplicates(subset=dedupe_keys, keep="last").sort_values(dedupe_keys)
     else:
         combined = df.copy()
 

@@ -2,7 +2,7 @@
 Airflow DAG - Atmospheric Monitoring Pipeline
 ---------------------------------------------
 TaskFlow API - each service as separate task.
-Daily schedule (configurable to hourly).
+Runs every 10 minutes.
 """
 
 from datetime import datetime, timedelta
@@ -28,7 +28,7 @@ import pandas as pd
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
     },
-    schedule="@daily",  # Change to "@hourly" for hourly runs
+    schedule="*/10 * * * *",  # Run every 10 minutes
     catchup=False,
     tags=["atmospheric", "monitoring", "anomaly"],
 )
@@ -103,7 +103,8 @@ def atmospheric_dag():
         if seasonal_json == "{}":
             return "{}"
         df = pd.read_json(seasonal_json)
-        df = run_prediction_service(df, config, PROJECT_ROOT)
+        # Use the responsive prediction path for frequent scheduled DAG runs.
+        df = run_prediction_service(df, config, PROJECT_ROOT, fast_mode=True)
         return df.to_json(date_format="iso") if not df.empty else "{}"
 
     @task
