@@ -49,3 +49,6 @@ Thumbs.db
 .idea/models/
 *.pkl
 *.keras
+models/
+*.pkl
+*.keras
