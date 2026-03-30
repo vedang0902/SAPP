@@ -2,7 +2,7 @@
 Airflow DAG - Atmospheric Monitoring Pipeline
 ---------------------------------------------
 TaskFlow API - each service as separate task.
-Runs every 10 minutes.
+Runs every 15 minutes.
 """
 
 from datetime import datetime, timedelta
@@ -28,7 +28,7 @@ import pandas as pd
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
     },
-    schedule="*/10 * * * *",  # Run every 10 minutes
+    schedule="*/15 * * * *",  # Run every 15 minutes
     catchup=False,
     tags=["atmospheric", "monitoring", "anomaly"],
 )
