@@ -44,12 +44,24 @@ INGESTION_STATE_PATH = OUTPUT_DIR / "ingestion_state.json"
 # This lets the app run in environments where installing `tensorflow`/other
 # heavy deps (from requirements.txt) would be problematic.
 DEFAULT_CONFIG = {
-    "sensor_bounds": {
-        "temperature": {"min": -40.0, "max": 60.0},
-        "humidity": {"min": 0.0, "max": 100.0},
-        "pressure": {"min": 800.0, "max": 1100.0},
+    "sensors": {
+        "columns": ["ws", "wd", "pressure", "rh", "temp", "dew", "rain"],
     },
-    "feature_engineering": {"rolling_window": 5},
+    "sensor_bounds": {
+        "ws": {"min": 0.0, "max": 120.0},
+        "wd": {"min": 0.0, "max": 360.0},
+        "pressure": {"min": 800.0, "max": 1100.0},
+        "rh": {"min": 0.0, "max": 100.0},
+        "temp": {"min": -40.0, "max": 55.0},
+        "dew": {"min": -50.0, "max": 50.0},
+        "rain": {"min": 0.0, "max": 500.0},
+    },
+    "ingestion": {
+        "csv_export_url": "",
+        "interval_seconds": 60,
+        "replace_master_from_sheet": True,
+    },
+    "feature_engineering": {"rolling_window": 6},
     "filtering": {
         "median_window": 5,
         "kalman": {
@@ -61,16 +73,19 @@ DEFAULT_CONFIG = {
     "model": {
         "isolation_forest": {"contamination": 0.04, "random_state": 42},
         "z_score": {"threshold": 3.0},
-        "seasonal_decomposition": {"period": 24, "model": "additive"},
+        "seasonal_decomposition": {"period": 1440, "model": "additive"},
     },
     "prediction": {
-        "horizon": 5,
+        "horizon": 6,
+        "primary_sensor": "temp",
         "sarima_order": [1, 1, 1],
-        "seasonal_order": [1, 1, 1, 24],
-        "lstm": {"epochs": 10, "batch_size": 32, "lookback": 20},
-        "ensemble_weights": {"sarima": 0.5, "lstm": 0.5},
+        "seasonal_order": [1, 1, 1, 1440],
+        "sarima_min_seasons": 10,
+        "lstm": {"epochs": 24, "batch_size": 16, "lookback": 48},
+        "ensemble_weights": {"sarima": 0.45, "lstm": 0.55},
         "forecast_error_threshold": 2.5,
-        "error_window": 20,
+        "error_window": 30,
+        "rolling_forecast_tail_rows": 600,
     },
     "drift": {
         "p_value_threshold": 0.05,
@@ -190,7 +205,7 @@ def run_pipeline(
     master_path = config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
 
     if not refresh_ingestion:
-        df = load_master_data(master_path, base_path)
+        df = load_master_data(master_path, base_path, config)
         if not df.empty:
             logger.info("Loaded %d rows from master CSV (refresh disabled)", len(df))
 
@@ -201,10 +216,7 @@ def run_pipeline(
     if df.empty:
         master_full = PROJECT_ROOT / master_path
         if master_full.exists():
-            df = pd.read_csv(master_full)
-            df.columns = df.columns.str.strip().str.lower()
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            df = df.dropna(subset=["timestamp"])
+            df = load_master_data(master_path, base_path, config)
             logger.info("Loaded %d rows from master CSV (no stream data)", len(df))
         else:
             # Generate sample data for demo
@@ -213,10 +225,14 @@ def run_pipeline(
             n = 200
             base_time = datetime(2025, 1, 1)
             df = pd.DataFrame({
-                "timestamp": [base_time + timedelta(hours=i) for i in range(n)],
-                "temperature": np.random.normal(25, 2, n),
-                "humidity": np.random.normal(60, 5, n),
-                "pressure": np.random.normal(1013, 3, n),
+                "timestamp": [base_time + timedelta(minutes=i) for i in range(n)],
+                "ws": np.clip(np.random.normal(2, 1, n), 0, None),
+                "wd": np.random.uniform(0, 360, n),
+                "pressure": np.random.normal(980, 5, n),
+                "rh": np.clip(np.random.normal(45, 8, n), 0, 100),
+                "temp": np.random.normal(28, 2, n),
+                "dew": np.random.normal(15, 2, n),
+                "rain": np.zeros(n),
             })
             logger.info("No input data; using %d rows of sample data", n)
 

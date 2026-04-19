@@ -2,15 +2,14 @@
 Generate Sample CSV Stream Data
 -------------------------------
 Creates sample sensor CSV files in data/stream for testing the pipeline.
-Simulates hardware sensor stream.
+Uses the same column names as the Google Sheet export (DateTime, WS, WD, ...).
 """
 
-import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -18,11 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def generate_sample_csv(
     output_path: Path,
     n_rows: int = 100,
-    freq: str = "1h",
+    freq: str = "1min",
     add_anomalies: bool = True,
 ) -> None:
     """
-    Generate a sample sensor CSV with temperature, humidity, pressure.
+    Generate a sample sensor CSV compatible with ingestion normalization.
 
     Args:
         output_path: Path to output CSV
@@ -36,22 +35,28 @@ def generate_sample_csv(
     timestamps = pd.date_range(base_time, periods=n_rows, freq=freq)
 
     np.random.seed(42)
-    temperature = np.random.normal(25, 2, n_rows)
-    humidity = np.random.normal(60, 5, n_rows)
-    pressure = np.random.normal(1013, 3, n_rows)
+    ws = np.clip(np.random.normal(2, 1, n_rows), 0, None)
+    wd = np.random.uniform(0, 360, n_rows)
+    pressure = np.random.normal(980, 5, n_rows)
+    rh = np.clip(np.random.normal(45, 8, n_rows), 0, 100)
+    temp = np.random.normal(28, 2, n_rows)
+    dew = np.random.normal(15, 2, n_rows)
+    rain = np.zeros(n_rows)
 
     if add_anomalies:
-        # Inject a few anomalies
-        idx = [10, 50, 80]
-        temperature[idx] = [45, -10, 70]  # Out of normal range
-        humidity[25] = 150  # Invalid
-        pressure[60] = 500  # Invalid
+        temp[[10, 50, 80]] = [50, -15, 52]
+        rh[25] = 110
+        pressure[60] = 500
 
     df = pd.DataFrame({
-        "timestamp": timestamps,
-        "temperature": temperature,
-        "humidity": humidity,
-        "pressure": pressure,
+        "DateTime": timestamps,
+        "WS": ws,
+        "WD": wd,
+        "Pressure": pressure,
+        "RH": rh,
+        "Temp": temp,
+        "Dew": dew,
+        "Rain": rain,
     })
     df.to_csv(output_path, index=False)
     print(f"Generated {output_path} with {n_rows} rows")

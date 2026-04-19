@@ -1,0 +1,4 @@
+# LSTM forecasting (TensorFlow). Use Python 3.10, 3.11, or 3.12.
+# Not installable on Python 3.14 yet — pipeline still runs; LSTM is skipped without it.
+
+tensorflow>=2.12.0

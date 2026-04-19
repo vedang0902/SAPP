@@ -14,8 +14,15 @@ import os
 import time
 from pathlib import Path
 
+import json
 import numpy as np
 import pandas as pd
+
+from services.pipeline_schema import (
+    capped_sarima_seasonal_m,
+    prediction_primary_base,
+    resolve_sensor_data_columns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 DRIFT_FLAG_PATH = Path("logs/drift_triggered.flag")
 MODELS_DIR = Path("models")
+MANIFEST_NAME = "training_manifest.json"
 
 
 def _get_project_root() -> Path:
@@ -35,6 +43,71 @@ def _check_drift_triggered(project_root: Path) -> bool:
     """Check if drift was detected (triggers model retraining)."""
     flag_path = project_root / DRIFT_FLAG_PATH
     return flag_path.exists()
+
+
+def _prediction_sensor_bases(sensor_cols: list[str]) -> list[str]:
+    return [c.replace("_filt", "") for c in sensor_cols]
+
+
+def _remove_cached_forecast_models(models_dir: Path) -> None:
+    for name in ("lstm_model.keras", "lstm_scaler.json", "sarima_fitted.pkl", MANIFEST_NAME):
+        p = models_dir / name
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _forecast_models_stale(
+    models_dir: Path,
+    sensor_cols: list[str],
+    primary_base: str,
+) -> bool:
+    """True if saved LSTM/SARIMA artifacts do not match current sensor schema."""
+    expected_bases = _prediction_sensor_bases(sensor_cols)
+    manifest_path = models_dir / MANIFEST_NAME
+    lstm_path = models_dir / "lstm_model.keras"
+
+    if lstm_path.exists():
+        mdl = _load_lstm_model(lstm_path)
+        if mdl is None:
+            return True
+        sh = getattr(mdl, "input_shape", None)
+        if sh is None or len(sh) < 3:
+            return True
+        if sh[-1] != len(sensor_cols):
+            logger.info(
+                "LSTM input features mismatch (saved=%s current=%s); retraining",
+                sh[-1],
+                len(sensor_cols),
+            )
+            return True
+
+    if manifest_path.exists():
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                m = json.load(f)
+            if m.get("sensor_columns") != expected_bases or m.get("primary_sensor") != primary_base:
+                return True
+        except Exception:
+            return True
+
+    return False
+
+
+def _write_training_manifest(
+    models_dir: Path,
+    sensor_cols: list[str],
+    primary_base: str,
+) -> None:
+    payload = {
+        "sensor_columns": _prediction_sensor_bases(sensor_cols),
+        "primary_sensor": primary_base,
+    }
+    path = models_dir / MANIFEST_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
 
 
 def _clear_drift_flag(project_root: Path) -> None:
@@ -338,7 +411,7 @@ def run_prediction_service(
     - Log model retraining events
 
     Args:
-        df: DataFrame with sensor columns (temperature_filt, humidity_filt, pressure_filt)
+        df: DataFrame with sensor columns (see sensors.columns; *_filt preferred)
         config: Pipeline configuration
         project_root: Project root for model/flag paths
         fast_mode: When True, prioritize responsiveness over exhaustive rolling
@@ -358,6 +431,19 @@ def run_prediction_service(
     horizon = pred_cfg.get("horizon", 5)
     sarima_order = tuple(pred_cfg.get("sarima_order", [1, 1, 1]))
     seasonal_order = tuple(pred_cfg.get("seasonal_order", [1, 1, 1, 24]))
+    if len(seasonal_order) == 4:
+        m_cfg = int(seasonal_order[3])
+        min_seasons = int(pred_cfg.get("sarima_min_seasons", 10))
+        m_eff = capped_sarima_seasonal_m(m_cfg, len(df), min_seasons=min_seasons)
+        if m_eff != m_cfg:
+            logger.info(
+                "SARIMA: capped seasonal m %s -> %s (rows=%s, min_seasons=%s)",
+                m_cfg,
+                m_eff,
+                len(df),
+                min_seasons,
+            )
+        seasonal_order = (seasonal_order[0], seasonal_order[1], seasonal_order[2], m_eff)
     lstm_cfg = pred_cfg.get("lstm", {})
     epochs = lstm_cfg.get("epochs", 10)
     batch_size = lstm_cfg.get("batch_size", 32)
@@ -366,36 +452,45 @@ def run_prediction_service(
     history_limit = int(pred_cfg.get("history_limit", 240))
     max_fast_forecast_rows = int(pred_cfg.get("max_fast_forecast_rows", 96))
 
-    sensor_cols = []
-    for c in ["temperature", "humidity", "pressure"]:
-        if f"{c}_filt" in df.columns:
-            sensor_cols.append(f"{c}_filt")
-        elif c in df.columns:
-            sensor_cols.append(c)
+    sensor_cols = resolve_sensor_data_columns(df, config)
     if not sensor_cols:
         logger.warning("No sensor columns for prediction")
         return df.copy()
 
+    primary_base = prediction_primary_base(config)
+    primary_col = next(
+        (c for c in sensor_cols if c.replace("_filt", "") == primary_base),
+        sensor_cols[0],
+    )
+
     models_dir = project_root / MODELS_DIR
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    retrain = _check_drift_triggered(project_root)
+    schema_stale = _forecast_models_stale(models_dir, sensor_cols, primary_base)
+    if schema_stale:
+        logger.info("Forecast model cache incompatible with current sensors; clearing cached models")
+        _remove_cached_forecast_models(models_dir)
+
+    drift_retrain = _check_drift_triggered(project_root)
     use_lstm = not fast_mode
-    if retrain:
+    if drift_retrain:
         logger.info("Drift trigger detected - retraining prediction models")
         _clear_drift_flag(project_root)
     if fast_mode:
-        retrain = False
+        drift_retrain = False
+
+    train_forecasters = drift_retrain or schema_stale
+    train_sarima = train_forecasters or not (models_dir / "sarima_fitted.pkl").exists()
+    train_lstm = use_lstm and (train_forecasters or not (models_dir / "lstm_model.keras").exists())
 
     total_training_time = 0.0
 
-    # SARIMA: one model per sensor (use primary for simplicity; could extend)
-    primary = sensor_cols[0]
+    # SARIMA: univariate on configured primary sensor
     sarima_fitted = None
 
-    if retrain or not (models_dir / "sarima_fitted.pkl").exists():
+    if train_sarima:
         t0 = time.perf_counter()
-        sarima_fitted = _fit_sarima(df[primary], sarima_order, seasonal_order)
+        sarima_fitted = _fit_sarima(df[primary_col], sarima_order, seasonal_order)
         if sarima_fitted is not None:
             try:
                 import joblib
@@ -410,21 +505,20 @@ def run_prediction_service(
             sarima_fitted = joblib.load(models_dir / "sarima_fitted.pkl")
         except Exception as e:
             logger.warning("Could not load SARIMA: %s", e)
-            sarima_fitted = _fit_sarima(df[primary], sarima_order, seasonal_order)
+            sarima_fitted = _fit_sarima(df[primary_col], sarima_order, seasonal_order)
 
     # LSTM: multivariate
     lstm_path = models_dir / "lstm_model.keras"
     scaler_params = None
     if (models_dir / "lstm_scaler.json").exists():
         try:
-            import json
-            with open(models_dir / "lstm_scaler.json") as f:
+            with open(models_dir / "lstm_scaler.json", encoding="utf-8") as f:
                 scaler_params = json.load(f)
         except Exception:
             pass
 
     lstm_model = None
-    if use_lstm and (retrain or not lstm_path.exists()):
+    if train_lstm:
         t0 = time.perf_counter()
         lstm_model, scaler_params = _fit_lstm(
             df, sensor_cols, lookback, horizon, epochs, batch_size, lstm_path
@@ -432,7 +526,6 @@ def run_prediction_service(
         total_training_time += time.perf_counter() - t0
         if scaler_params is not None:
             try:
-                import json
                 with open(models_dir / "lstm_scaler.json", "w") as f:
                     json.dump(scaler_params, f)
             except Exception as e:
@@ -441,7 +534,7 @@ def run_prediction_service(
     elif use_lstm:
         lstm_model = _load_lstm_model(lstm_path)
 
-    if use_lstm and retrain and lstm_path.exists():
+    if use_lstm and train_lstm and lstm_path.exists():
         lstm_model = _load_lstm_model(lstm_path)
 
     # Rolling forecast: refit SARIMA every REFIT_INTERVAL steps for accuracy/speed balance
@@ -460,8 +553,36 @@ def run_prediction_service(
     forecast_start = train_size
     if fast_mode:
         forecast_start = max(train_size, n - max_fast_forecast_rows)
+    else:
+        # Full mode defaults to evaluating only the last N rows here; each step runs
+        # SARIMA forecast (+ LSTM inference). A full O(n) pass over thousands of rows
+        # looks "hung" for minutes. Use 0 for unlimited historical rolling forecasts.
+        tail_cfg = pred_cfg.get("rolling_forecast_tail_rows", 600)
+        try:
+            tail_n = int(tail_cfg)
+        except (TypeError, ValueError):
+            tail_n = 600
+        if tail_n > 0:
+            forecast_start = max(forecast_start, n - tail_n)
 
+    n_steps = max(0, n - forecast_start)
+    logger.info(
+        "Rolling hybrid forecast: %d row-indices (%d..%d); refit_interval=%s; LSTM=%s",
+        n_steps,
+        forecast_start,
+        n - 1,
+        REFIT_INTERVAL if not fast_mode else 0,
+        lstm_model is not None,
+    )
+
+    _loop_log_every = 800
     for i in range(forecast_start, n):
+        if (i - forecast_start) > 0 and (i - forecast_start) % _loop_log_every == 0:
+            logger.info(
+                "Prediction progress: %d / %d rows",
+                i - forecast_start,
+                n_steps,
+            )
         window_start = max(0, i - history_limit)
         window = result.iloc[window_start:i]
         baseline_pred = _fast_window_baseline(window, sensor_cols) if fast_mode else None
@@ -476,7 +597,9 @@ def run_prediction_service(
                 pass
             if REFIT_INTERVAL > 0 and (i - forecast_start) % REFIT_INTERVAL == 0 and i > forecast_start:
                 try:
-                    sarima_fitted = _fit_sarima(window[primary].iloc[-150:], sarima_order, seasonal_order)
+                    sarima_fitted = _fit_sarima(
+                        window[primary_col].iloc[-150:], sarima_order, seasonal_order
+                    )
                 except Exception:
                     pass
 
@@ -500,8 +623,12 @@ def run_prediction_service(
             result[col] = result[col].ffill().bfill()
 
     # Forecast error: use primary sensor for anomaly
-    pred_col = pred_columns[0]
-    actual_col = sensor_cols[0]
+    primary_idx = next(
+        (j for j, c in enumerate(sensor_cols) if c.replace("_filt", "") == primary_base),
+        0,
+    )
+    pred_col = pred_columns[primary_idx]
+    actual_col = sensor_cols[primary_idx]
     error_window = pred_cfg.get("error_window", 20)
     if result[pred_col].notna().any():
         result = _compute_forecast_errors(result, pred_col, actual_col, error_window=error_window)
@@ -520,6 +647,9 @@ def run_prediction_service(
         fcast_var = result.loc[valid, pred_col].var()
         logger.info("Prediction metrics: RMSE=%.4f, MAE=%.4f, Forecast variance=%.4f, Training=%.2fs", rmse, mae, fcast_var, total_training_time)
         _log_metrics(rmse, mae, fcast_var, total_training_time)
+
+    if (models_dir / "sarima_fitted.pkl").exists():
+        _write_training_manifest(models_dir, sensor_cols, primary_base)
 
     return result
 

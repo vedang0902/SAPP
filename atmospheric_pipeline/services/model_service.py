@@ -13,6 +13,12 @@ import pandas as pd
 from scipy import stats
 from sklearn.ensemble import IsolationForest
 
+from services.pipeline_schema import (
+    capped_seasonal_period,
+    prediction_primary_base,
+    resolve_sensor_data_columns,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +74,7 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     An anomaly is flagged if ANY of: Isolation Forest, Z-score, residual, or forecast error > threshold.
 
     Args:
-        df: DataFrame with features (must have temperature, humidity, pressure or _filt variants).
+        df: DataFrame with features (sensor columns or _filt variants).
             If forecast_error present (from prediction_service), used for forecast-based anomaly.
         config: Pipeline configuration
 
@@ -86,7 +92,8 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
     contamination = if_cfg.get("contamination", 0.04)
     z_threshold = z_cfg.get("threshold", 3.0)
-    period = sd_cfg.get("period", 24)
+    period_cfg = int(sd_cfg.get("period", 24))
+    period = capped_seasonal_period(period_cfg, len(df))
     model_type = sd_cfg.get("model", "additive")
 
     # Forecast error threshold (from prediction config if available)
@@ -95,13 +102,7 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
     result = df.copy()
 
-    # Columns for ML
-    use_cols = []
-    for c in ["temperature", "humidity", "pressure"]:
-        if f"{c}_filt" in result.columns:
-            use_cols.append(f"{c}_filt")
-        elif c in result.columns:
-            use_cols.append(c)
+    use_cols = resolve_sensor_data_columns(result, config)
     if not use_cols:
         logger.warning("No sensor columns for model service")
         return result
@@ -121,8 +122,11 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     result["anomaly_zscore"] = z_flags
 
     # 3. Seasonal decomposition residual (use pre-computed if available from seasonal_decomposition_service)
-    primary = use_cols[0]
-    primary_base = primary.replace("_filt", "")
+    primary_base = prediction_primary_base(config)
+    primary = next(
+        (c for c in use_cols if c.replace("_filt", "") == primary_base),
+        use_cols[0],
+    )
     resid = None
     if f"{primary_base}_residual" in result.columns and result[f"{primary_base}_residual"].notna().any():
         resid = result[f"{primary_base}_residual"]

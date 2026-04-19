@@ -7,9 +7,9 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
-# Install dependencies (tensorflow, statsmodels, scikit-learn, etc.)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Core deps + TensorFlow (LSTM); base image is 3.10 so TF wheels exist
+COPY requirements.txt requirements-lstm.txt .
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-lstm.txt
 
 # Copy project
 COPY . .

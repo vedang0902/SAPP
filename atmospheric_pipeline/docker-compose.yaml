@@ -15,6 +15,7 @@ services:
       - ./output:/app/output
       - ./logs:/app/logs
     environment:
+      - GOOGLE_SHEETS_CSV_URL=${GOOGLE_SHEETS_CSV_URL:-}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD:-}
       - ALERT_SENDER_EMAIL=${ALERT_SENDER_EMAIL:-}

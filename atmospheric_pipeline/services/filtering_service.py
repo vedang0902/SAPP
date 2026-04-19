@@ -12,6 +12,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from services.pipeline_schema import sensor_base_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,14 +149,14 @@ def apply_median_kalman(
 # ---------------------------------------------------------------------------
 def run_filtering(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
-    Apply median + adaptive Kalman filtering to temperature, humidity, pressure.
+    Apply median + adaptive Kalman filtering to each configured sensor column.
 
     Args:
         df: Validated DataFrame
         config: Pipeline configuration
 
     Returns:
-        DataFrame with filtered columns (temperature_filt, humidity_filt, pressure_filt)
+        DataFrame with filtered columns (<sensor>_filt)
     """
     if df.empty:
         return df.copy()
@@ -164,7 +166,7 @@ def run_filtering(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     kf_params = filt_cfg.get("kalman", {})
 
     result = df.copy()
-    for col in ["temperature", "humidity", "pressure"]:
+    for col in sensor_base_columns(config):
         if col not in result.columns:
             continue
         result[f"{col}_filt"] = apply_median_kalman(

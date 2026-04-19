@@ -37,17 +37,13 @@ def atmospheric_dag():
 
     @task
     def ingestion_task():
-        from services.ingestion_service import run_ingestion
+        from services.ingestion_service import run_ingestion, load_master_data
         from main_pipeline import load_config, PROJECT_ROOT
         config = load_config()
         df = run_ingestion(config, str(PROJECT_ROOT))
         if df.empty:
-            # Load from master as fallback
-            master = PROJECT_ROOT / config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
-            if master.exists():
-                df = pd.read_csv(master)
-                df.columns = df.columns.str.strip().str.lower()
-                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            master_rel = config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
+            df = load_master_data(master_rel, str(PROJECT_ROOT), config)
         return df.to_json(date_format="iso") if not df.empty else "{}"
 
     @task
