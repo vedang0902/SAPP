@@ -5,7 +5,7 @@ Production-ready modular atmospheric monitoring and anomaly detection system wit
 ## Architecture
 
 ```
-Sensor Stream (CSV: timestamp, temperature, humidity, pressure)
+Sensor Stream (CSV: timestamp,ws,wd,pressure,rh,temp,dew,rain)
     ↓
 Validation
     ↓
@@ -107,6 +107,29 @@ Edit `config.yaml` for:
 - KS p-value threshold for drift
 - Paths (input stream, master CSV, output, logs)
 - Slack webhook URL (or set `SLACK_WEBHOOK_URL` env var)
+
+## OpenWebUI RAG Integration
+
+This project also supports a Retrieval-Augmented Generation (RAG) workflow through OpenWebUI for querying atmospheric data context.
+
+### Setup Used
+
+- **Wrapper model**: Custom OpenWebUI wrapper model configured on top of base model `ollama3:8B`
+- **Knowledge base format**: Source CSV data is converted and stored in markdown format for ingestion
+- **Vector database**: Chroma is used as the underlying VectorDB for embeddings and retrieval
+
+### How It Is Used
+
+- CSV outputs (for example anomaly or monitoring datasets) are transformed into markdown documents
+- These markdown documents are added to the OpenWebUI knowledge base
+- OpenWebUI indexes the documents into Chroma for semantic retrieval
+- User queries are answered by combining retrieved context with `ollama3:8B` generation through the wrapper model
+
+### Why This Helps
+
+- Enables natural-language querying of atmospheric datasets without manual CSV inspection
+- Grounds responses in project-specific historical data via retrieval
+- Provides a lightweight local RAG stack using OpenWebUI + Ollama + Chroma
 
 ---
 

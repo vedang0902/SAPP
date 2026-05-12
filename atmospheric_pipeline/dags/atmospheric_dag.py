@@ -30,6 +30,7 @@ import pandas as pd
     },
     schedule="*/15 * * * *",  # Run every 15 minutes
     catchup=False,
+    max_active_runs=1,
     tags=["atmospheric", "monitoring", "anomaly"],
 )
 def atmospheric_dag():

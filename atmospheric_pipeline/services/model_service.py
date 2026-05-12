@@ -99,6 +99,8 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     # Forecast error threshold (from prediction config if available)
     pred_cfg = config.get("prediction", {})
     forecast_error_threshold = pred_cfg.get("forecast_error_threshold", 2.5)
+    forecast_error_mode = str(pred_cfg.get("forecast_error_mode", "adaptive")).strip().lower()
+    forecast_error_k = float(pred_cfg.get("forecast_error_k", 3.0))
 
     result = df.copy()
 
@@ -143,9 +145,19 @@ def run_model_service(df: pd.DataFrame, config: dict) -> pd.DataFrame:
 
     # 4. Forecast-error-based anomaly (if prediction_service ran and added forecast_error)
     if "forecast_error" in result.columns:
-        result["anomaly_forecast_error"] = (
-            result["forecast_error"] > forecast_error_threshold
-        ).astype(int)
+        if (
+            forecast_error_mode == "adaptive"
+            and "forecast_error_mean" in result.columns
+            and "forecast_error_std" in result.columns
+        ):
+            dynamic_threshold = result["forecast_error_mean"] + forecast_error_k * result["forecast_error_std"]
+            result["anomaly_forecast_error"] = (
+                result["forecast_error"] > dynamic_threshold
+            ).astype(int)
+        else:
+            result["anomaly_forecast_error"] = (
+                result["forecast_error"] > forecast_error_threshold
+            ).astype(int)
     else:
         result["anomaly_forecast_error"] = 0
 

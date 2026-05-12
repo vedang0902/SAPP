@@ -11,6 +11,7 @@ Implements hybrid ensemble forecasting for atmospheric sensor streams:
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -128,8 +129,13 @@ def _fit_sarima(
     series: pd.Series,
     order: tuple,
     seasonal_order: tuple,
+    *,
+    maxiter: int = 100,
+    disp: bool = False,
+    heartbeat_seconds: float = 0.0,
+    log_label: str = "SARIMAX",
 ) -> object:
-    """Fit SARIMAX model on series."""
+    """Fit SARIMAX model on series. Optional heartbeat logs while statsmodels optimizes."""
     try:
         from statsmodels.tsa.statespace.sarimax import SARIMAX
     except ImportError as e:
@@ -137,10 +143,43 @@ def _fit_sarima(
         return None
 
     series_clean = series.dropna()
-    if len(series_clean) < 30:
+    n = len(series_clean)
+    if n < 30:
         logger.warning("Insufficient data for SARIMA (need >= 30 points)")
         return None
 
+    logger.info(
+        "%s fit starting: n=%d order=%s seasonal_order=%s maxiter=%s disp=%s",
+        log_label,
+        n,
+        order,
+        seasonal_order,
+        maxiter,
+        disp,
+    )
+    t_start = time.perf_counter()
+    stop_hb = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = max(15.0, float(heartbeat_seconds))
+        while not stop_hb.wait(timeout=interval):
+            logger.info(
+                "%s: optimizer still running (%.0f s elapsed, n=%d)",
+                log_label,
+                time.perf_counter() - t_start,
+                n,
+            )
+
+    hb_thread = None
+    if heartbeat_seconds and float(heartbeat_seconds) > 0:
+        hb_thread = threading.Thread(
+            target=_heartbeat,
+            name="sarima-heartbeat",
+            daemon=True,
+        )
+        hb_thread.start()
+
+    fitted = None
     try:
         model = SARIMAX(
             series_clean,
@@ -149,11 +188,26 @@ def _fit_sarima(
             enforce_stationarity=False,
             enforce_invertibility=False,
         )
-        fitted = model.fit(disp=False, maxiter=100)
-        return fitted
+        fitted = model.fit(disp=disp, maxiter=int(maxiter))
     except Exception as e:
-        logger.warning("SARIMA fit failed: %s", e)
-        return None
+        logger.warning("%s fit failed after %.1f s: %s", log_label, time.perf_counter() - t_start, e)
+    finally:
+        stop_hb.set()
+
+    elapsed = time.perf_counter() - t_start
+    if fitted is not None:
+        summary_bits = []
+        try:
+            ret = getattr(fitted, "mle_retvals", None)
+            if isinstance(ret, dict):
+                for key in ("iterations", "fcalls", "warnflag"):
+                    if key in ret:
+                        summary_bits.append(f"{key}={ret[key]}")
+        except Exception:
+            pass
+        tail = (" " + ", ".join(summary_bits)) if summary_bits else ""
+        logger.info("%s fit finished in %.1f s%s", log_label, elapsed, tail)
+    return fitted
 
 
 def _forecast_sarima(fitted: object, steps: int) -> tuple:
@@ -185,16 +239,16 @@ def _build_lstm_model(
     """
     try:
         from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import LSTM, Dense, Dropout
+        from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
         from tensorflow.keras.regularizers import l2
     except ImportError as e:
         logger.error("TensorFlow required for LSTM: %s", e)
         return None
 
     model = Sequential([
+        Input(shape=(lookback, n_features)),
         LSTM(
             lstm_units,
-            input_shape=(lookback, n_features),
             return_sequences=False,
             kernel_regularizer=l2(l2_reg),
         ),
@@ -243,12 +297,14 @@ def _fit_lstm(
     epochs: int,
     batch_size: int,
     model_path: Path,
+    patience: int = 3,
 ) -> tuple:
     """Train LSTM on multivariate sensor data. Returns (model, scaler_params)."""
     try:
         import tensorflow as tf
         from tensorflow.keras.callbacks import EarlyStopping
-    except ImportError:
+    except ImportError as e:
+        logger.warning("LSTM disabled: TensorFlow import failed (%s)", e)
         return None, None
 
     data = df[sensor_cols].values.astype(np.float32)
@@ -259,6 +315,10 @@ def _fit_lstm(
     scaled, min_vals, max_vals = _scale_minmax(data)
     X, y = _create_sequences(scaled, lookback, horizon)
     if len(X) < 10:
+        logger.warning(
+            "LSTM disabled: insufficient sequences after windowing (len(X)=%d, need>=10)",
+            len(X),
+        )
         return None, None
 
     # Use last step of horizon for single-step forecast alignment
@@ -267,24 +327,40 @@ def _fit_lstm(
 
     model = _build_lstm_model(lookback, n_features)
     if model is None:
+        logger.warning("LSTM disabled: model build failed")
         return None, None
+
+    logger.info(
+        "LSTM training starting: train_rows=%d sequences=%d n_features=%d epochs=%d batch=%d lookback=%d horizon=%d",
+        len(data),
+        len(X),
+        n_features,
+        epochs,
+        min(batch_size, len(X)),
+        lookback,
+        horizon,
+    )
 
     early_stop = EarlyStopping(
         monitor="val_loss",
-        patience=3,
+        patience=max(1, int(patience)),
         restore_best_weights=True,
         verbose=0,
     )
 
     start = time.perf_counter()
-    model.fit(
-        X, y_single,
-        epochs=epochs,
-        batch_size=min(batch_size, len(X)),
-        validation_split=0.2,
-        callbacks=[early_stop],
-        verbose=0,
-    )
+    try:
+        model.fit(
+            X, y_single,
+            epochs=epochs,
+            batch_size=min(batch_size, len(X)),
+            validation_split=0.2,
+            callbacks=[early_stop],
+            verbose=0,
+        )
+    except Exception as e:
+        logger.warning("LSTM training failed: %s", e)
+        return None, None
     train_time = time.perf_counter() - start
     logger.info("LSTM trained in %.2f s", train_time)
 
@@ -362,10 +438,11 @@ def _ensemble_predict(
     lstm_pred: np.ndarray,
     sensor_idx: int,
     weights: dict,
+    weight_keys: tuple[str, str] = ("sarima", "lstm"),
 ) -> float:
     """Combine SARIMA and LSTM predictions via weighted average."""
-    w_sarima = weights.get("sarima", 0.5)
-    w_lstm = weights.get("lstm", 0.5)
+    w_sarima = weights.get(weight_keys[0], weights.get("sarima", 0.5))
+    w_lstm = weights.get(weight_keys[1], weights.get("lstm", 0.5))
     if sarima_pred is None or np.isnan(sarima_pred):
         return float(lstm_pred[sensor_idx]) if lstm_pred is not None else np.nan
     if lstm_pred is None or np.any(np.isnan(lstm_pred)):
@@ -448,7 +525,9 @@ def run_prediction_service(
     epochs = lstm_cfg.get("epochs", 10)
     batch_size = lstm_cfg.get("batch_size", 32)
     lookback = lstm_cfg.get("lookback", 20)
+    lstm_patience = int(lstm_cfg.get("patience", 3))
     weights = pred_cfg.get("ensemble_weights", {"sarima": 0.5, "lstm": 0.5})
+    split_weights_by_primary = bool(pred_cfg.get("split_weights_by_primary", True))
     history_limit = int(pred_cfg.get("history_limit", 240))
     max_fast_forecast_rows = int(pred_cfg.get("max_fast_forecast_rows", 96))
 
@@ -462,6 +541,13 @@ def run_prediction_service(
         (c for c in sensor_cols if c.replace("_filt", "") == primary_base),
         sensor_cols[0],
     )
+    logger.info(
+        "Hybrid prediction: n_rows=%d sensor_cols=%s primary=%s fast_mode=%s",
+        len(df),
+        sensor_cols,
+        primary_col,
+        fast_mode,
+    )
 
     models_dir = project_root / MODELS_DIR
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -472,7 +558,7 @@ def run_prediction_service(
         _remove_cached_forecast_models(models_dir)
 
     drift_retrain = _check_drift_triggered(project_root)
-    use_lstm = not fast_mode
+    use_lstm = bool(pred_cfg.get("train_lstm", True)) and (not fast_mode)
     if drift_retrain:
         logger.info("Drift trigger detected - retraining prediction models")
         _clear_drift_flag(project_root)
@@ -485,27 +571,61 @@ def run_prediction_service(
 
     total_training_time = 0.0
 
+    sarima_maxiter = int(pred_cfg.get("sarima_maxiter", 100))
+    sarima_disp = bool(pred_cfg.get("sarima_disp", False))
+    sarima_heartbeat = float(pred_cfg.get("sarima_heartbeat_seconds", 60))
+    sarima_refit_maxiter = int(pred_cfg.get("sarima_refit_maxiter", 40))
+    sarima_refit_window_rows = int(pred_cfg.get("sarima_refit_window_rows", 360))
+    sarima_train_tail_rows = int(pred_cfg.get("sarima_train_tail_rows", 0))
+
     # SARIMA: univariate on configured primary sensor
     sarima_fitted = None
 
     if train_sarima:
+        series_for_fit = df[primary_col]
+        if sarima_train_tail_rows > 0:
+            series_for_fit = series_for_fit.iloc[-sarima_train_tail_rows:]
+        logger.info(
+            "Training SARIMA on column %r (train_sarima=True, heartbeat=%ss, tail_rows=%s)",
+            primary_col,
+            sarima_heartbeat,
+            sarima_train_tail_rows if sarima_train_tail_rows > 0 else "all",
+        )
         t0 = time.perf_counter()
-        sarima_fitted = _fit_sarima(df[primary_col], sarima_order, seasonal_order)
+        sarima_fitted = _fit_sarima(
+            series_for_fit,
+            sarima_order,
+            seasonal_order,
+            maxiter=sarima_maxiter,
+            disp=sarima_disp,
+            heartbeat_seconds=sarima_heartbeat,
+            log_label="SARIMAX(initial)",
+        )
         if sarima_fitted is not None:
             try:
                 import joblib
                 joblib.dump(sarima_fitted, models_dir / "sarima_fitted.pkl")
             except Exception as e:
                 logger.warning("Could not save SARIMA: %s", e)
-        total_training_time += time.perf_counter() - t0
-        logger.info("SARIMA training time: %.2f s", time.perf_counter() - t0)
+        sarima_dt = time.perf_counter() - t0
+        total_training_time += sarima_dt
+        logger.info("SARIMA step wall time (fit + save): %.2f s", sarima_dt)
     else:
+        logger.info("Loading cached SARIMA from %s", models_dir / "sarima_fitted.pkl")
         try:
             import joblib
             sarima_fitted = joblib.load(models_dir / "sarima_fitted.pkl")
         except Exception as e:
-            logger.warning("Could not load SARIMA: %s", e)
-            sarima_fitted = _fit_sarima(df[primary_col], sarima_order, seasonal_order)
+            logger.warning("Could not load SARIMA: %s; refitting", e)
+            sarima_fitted = _fit_sarima(
+                df[primary_col],
+                sarima_order,
+                seasonal_order,
+                maxiter=sarima_maxiter,
+                disp=sarima_disp,
+                heartbeat_seconds=sarima_heartbeat,
+                log_label="SARIMAX(fallback-load)",
+            )
 
     # LSTM: multivariate
     lstm_path = models_dir / "lstm_model.keras"
@@ -519,19 +639,24 @@ def run_prediction_service(
 
     lstm_model = None
     if train_lstm:
+        logger.info("Training LSTM (train_lstm=True)")
         t0 = time.perf_counter()
         lstm_model, scaler_params = _fit_lstm(
-            df, sensor_cols, lookback, horizon, epochs, batch_size, lstm_path
+            df, sensor_cols, lookback, horizon, epochs, batch_size, lstm_path, patience=lstm_patience
         )
-        total_training_time += time.perf_counter() - t0
+        lstm_dt = time.perf_counter() - t0
+        total_training_time += lstm_dt
         if scaler_params is not None:
             try:
                 with open(models_dir / "lstm_scaler.json", "w") as f:
                     json.dump(scaler_params, f)
             except Exception as e:
                 logger.warning("Could not save LSTM scaler: %s", e)
-        logger.info("LSTM training time: %.2f s", time.perf_counter() - t0)
+        if lstm_model is None:
+            logger.warning("LSTM requested but unavailable after training attempt; continuing with SARIMA-only forecasts")
+        logger.info("LSTM step wall time (train + save): %.2f s", lstm_dt)
     elif use_lstm:
+        logger.info("Loading cached LSTM from %s", lstm_path)
         lstm_model = _load_lstm_model(lstm_path)
 
     if use_lstm and train_lstm and lstm_path.exists():
@@ -544,6 +669,10 @@ def run_prediction_service(
     result = df.copy()
     n = len(result)
     pred_columns = [f"forecast_{c.replace('_filt', '')}" for c in sensor_cols]
+    primary_idx = next(
+        (j for j, c in enumerate(sensor_cols) if c.replace("_filt", "") == primary_base),
+        0,
+    )
 
     for col in pred_columns:
         result[col] = np.nan
@@ -575,7 +704,10 @@ def run_prediction_service(
         lstm_model is not None,
     )
 
-    _loop_log_every = 800
+    try:
+        _loop_log_every = max(1, int(pred_cfg.get("rolling_log_interval", 100)))
+    except (TypeError, ValueError):
+        _loop_log_every = 100
     for i in range(forecast_start, n):
         if (i - forecast_start) > 0 and (i - forecast_start) % _loop_log_every == 0:
             logger.info(
@@ -597,8 +729,15 @@ def run_prediction_service(
                 pass
             if REFIT_INTERVAL > 0 and (i - forecast_start) % REFIT_INTERVAL == 0 and i > forecast_start:
                 try:
+                    refit_window = max(30, sarima_refit_window_rows)
                     sarima_fitted = _fit_sarima(
-                        window[primary_col].iloc[-150:], sarima_order, seasonal_order
+                        window[primary_col].iloc[-refit_window:],
+                        sarima_order,
+                        seasonal_order,
+                        maxiter=sarima_refit_maxiter,
+                        disp=False,
+                        heartbeat_seconds=0.0,
+                        log_label="SARIMAX(refit)",
                     )
                 except Exception:
                     pass
@@ -609,12 +748,27 @@ def run_prediction_service(
             lstm_pred = _forecast_lstm_window(window, sensor_cols, lstm_model, scaler_params, lookback)
 
         for j, col in enumerate(pred_columns):
+            weight_keys = ("sarima", "lstm")
+            if split_weights_by_primary and j != primary_idx:
+                weight_keys = ("sarima_other", "lstm_other")
             if fast_mode and baseline_pred is not None and not np.isnan(baseline_pred[j]):
                 pred_val = float(baseline_pred[j])
                 if j == 0 and sarima_pred_val is not None and not np.isnan(sarima_pred_val):
-                    pred_val = _ensemble_predict(sarima_pred_val, baseline_pred, j, weights)
+                    pred_val = _ensemble_predict(
+                        sarima_pred_val,
+                        baseline_pred,
+                        j,
+                        weights,
+                        weight_keys=weight_keys,
+                    )
             else:
-                pred_val = _ensemble_predict(sarima_pred_val, lstm_pred, j, weights)
+                pred_val = _ensemble_predict(
+                    sarima_pred_val,
+                    lstm_pred,
+                    j,
+                    weights,
+                    weight_keys=weight_keys,
+                )
             if not np.isnan(pred_val):
                 result.loc[result.index[i], col] = pred_val
 
@@ -623,15 +777,22 @@ def run_prediction_service(
             result[col] = result[col].ffill().bfill()
 
     # Forecast error: use primary sensor for anomaly
-    primary_idx = next(
-        (j for j, c in enumerate(sensor_cols) if c.replace("_filt", "") == primary_base),
-        0,
-    )
     pred_col = pred_columns[primary_idx]
     actual_col = sensor_cols[primary_idx]
     error_window = pred_cfg.get("error_window", 20)
+    warmup_rows = int(pred_cfg.get("forecast_error_warmup_rows", lookback))
     if result[pred_col].notna().any():
         result = _compute_forecast_errors(result, pred_col, actual_col, error_window=error_window)
+        if warmup_rows > 0:
+            warm_start = max(forecast_start, 0)
+            warm_end = min(warm_start + warmup_rows, len(result))
+            warm_idx = result.index[warm_start:warm_end]
+            if len(warm_idx) > 0:
+                result.loc[warm_idx, ["forecast_error", "forecast_error_mean", "forecast_error_std"]] = np.nan
+                logger.info(
+                    "Forecast-error warmup: masked %d initial rows for anomaly scoring",
+                    len(warm_idx),
+                )
     else:
         result["forecast_error"] = np.nan
         result["forecast_error_mean"] = np.nan

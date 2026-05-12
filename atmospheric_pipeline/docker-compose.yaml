@@ -14,6 +14,7 @@ services:
       - ./data:/app/data
       - ./output:/app/output
       - ./logs:/app/logs
+      - ./models:/app/models
     environment:
       - GOOGLE_SHEETS_CSV_URL=${GOOGLE_SHEETS_CSV_URL:-}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}

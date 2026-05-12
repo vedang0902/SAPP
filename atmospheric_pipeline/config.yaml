@@ -68,18 +68,35 @@ model:
 prediction:
   horizon: 6
   primary_sensor: temp
-  sarima_order: [1, 1, 1]
+  sarima_order: [0, 1, 1]
   # Target: one day at 1-minute cadence (m=1440). Actual m is capped so length >= sarima_min_seasons * m.
-  seasonal_order: [1, 1, 1, 1440]
-  sarima_min_seasons: 10
+  # Development-lean seasonal dynamics (lighter than full seasonal ARMA).
+  seasonal_order: [0, 1, 1, 60]
+  sarima_min_seasons: 24
+  # SARIMAX optimizer: heartbeat logs every N seconds during long fits (0 = off).
+  sarima_heartbeat_seconds: 60
+  sarima_maxiter: 10
+  sarima_disp: false
+  # Smaller refits inside the rolling loop (short windows).
+  sarima_refit_maxiter: 10
+  sarima_refit_window_rows: 360
+  train_lstm: true
+  sarima_train_tail_rows: 1500
   lstm:
-    epochs: 24
+    epochs: 35
     batch_size: 16
     lookback: 48
+    patience: 4
   ensemble_weights:
     sarima: 0.45
     lstm: 0.55
+    sarima_other: 0.15
+    lstm_other: 0.85
+  split_weights_by_primary: true
   forecast_error_threshold: 2.5
+  forecast_error_mode: adaptive
+  forecast_error_k: 3.0
+  forecast_error_warmup_rows: 48
   error_window: 30
   history_limit: 360
   sarima_refit_interval: 30
@@ -87,6 +104,7 @@ prediction:
   # Non-fast runs: only roll 1-step forecasts over the last N rows (then ffill earlier rows).
   # Full O(n) rolling is very slow (SARIMA + LSTM per row). Set to 0 to evaluate every row.
   rolling_forecast_tail_rows: 600
+  rolling_log_interval: 100
 
 # Drift detection (Kolmogorov-Smirnov test)
 drift:

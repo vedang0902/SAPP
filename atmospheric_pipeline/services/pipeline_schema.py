@@ -69,3 +69,4 @@ def prediction_primary_base(config: dict) -> str:
     if primary in bases:
         return primary
     return bases[0] if bases else "temp"
+
