@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 
+from services.pipeline_schema import resolve_sensor_data_columns
+
 logger = logging.getLogger(__name__)
 
 DRIFT_FLAG_PATH = Path("logs/drift_triggered.flag")
@@ -77,7 +79,7 @@ def run_drift_detection(
     When drift is detected, writes flag to trigger prediction model retraining.
 
     Args:
-        df: DataFrame with sensor data (temperature_filt, etc.)
+        df: DataFrame with sensor data (including *_filt columns when present)
         config: Pipeline configuration
         project_root: Project root for drift flag path
 
@@ -100,12 +102,7 @@ def run_drift_detection(
         return df.copy()
 
     result = df.copy()
-    sensor_cols = []
-    for c in ["temperature", "humidity", "pressure"]:
-        if f"{c}_filt" in df.columns:
-            sensor_cols.append(f"{c}_filt")
-        elif c in df.columns:
-            sensor_cols.append(c)
+    sensor_cols = resolve_sensor_data_columns(df, config)
 
     drift_detected = False
     for col in sensor_cols:

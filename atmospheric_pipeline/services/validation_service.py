@@ -11,16 +11,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from services.pipeline_schema import sensor_base_columns
+
 logger = logging.getLogger(__name__)
 
 
 def load_bounds(config: dict) -> dict:
     """Load sensor bounds from config."""
-    return config.get("sensor_bounds", {
-        "temperature": {"min": -40.0, "max": 60.0},
-        "humidity": {"min": 0.0, "max": 100.0},
-        "pressure": {"min": 800.0, "max": 1100.0},
-    })
+    return config.get("sensor_bounds", {})
 
 
 def get_invalid_log_path(config: dict, base_path: str = ".") -> Path:
@@ -66,7 +64,7 @@ def validate_dataframe(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     Invalid rows are logged; only valid rows are returned.
 
     Args:
-        df: Input DataFrame with columns temperature, humidity, pressure
+        df: Input DataFrame with configured sensor columns (see sensors.columns)
         config: Pipeline configuration
 
     Returns:
@@ -79,7 +77,7 @@ def validate_dataframe(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     valid_mask = np.ones(len(df), dtype=bool)
     invalid_rows = []
 
-    for col in ["temperature", "humidity", "pressure"]:
+    for col in sensor_base_columns(config):
         if col in df.columns:
             valid_mask &= df[col].notna()
 

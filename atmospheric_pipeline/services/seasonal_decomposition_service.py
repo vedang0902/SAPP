@@ -10,6 +10,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from services.pipeline_schema import capped_seasonal_period, sensor_base_columns
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,7 @@ def run_seasonal_decomposition(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     Adds trend, seasonal, residual columns for downstream use.
 
     Args:
-        df: DataFrame with temperature, humidity, pressure (or _filt variants)
+        df: DataFrame with configured sensor columns (or _filt variants)
         config: Pipeline configuration
 
     Returns:
@@ -69,12 +71,20 @@ def run_seasonal_decomposition(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         return df.copy()
 
     sd_cfg = config.get("model", {}).get("seasonal_decomposition", {})
-    period = sd_cfg.get("period", 24)
+    period_cfg = int(sd_cfg.get("period", 24))
     model_type = sd_cfg.get("model", "additive")
+    period = capped_seasonal_period(period_cfg, len(df))
+    if period != period_cfg:
+        logger.info(
+            "Seasonal decomposition: capped period %s -> %s (rows=%s)",
+            period_cfg,
+            period,
+            len(df),
+        )
 
     result = df.copy()
     base_cols = []
-    for c in ["temperature", "humidity", "pressure"]:
+    for c in sensor_base_columns(config):
         if f"{c}_filt" in df.columns:
             base_cols.append((f"{c}_filt", c))
         elif c in df.columns:

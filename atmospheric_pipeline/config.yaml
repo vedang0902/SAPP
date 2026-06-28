@@ -1,31 +1,56 @@
 # Atmospheric Monitoring Pipeline - Configuration
 # ----------------------------------------------
-# Central configuration for all pipeline services.
 
-# Sensor bounds for validation (configurable per sensor)
+# Canonical sensor columns (Google Sheet: DateTime, WS, WD, Pressure, RH, Temp, Dew, Rain)
+sensors:
+  columns: ["ws", "wd", "pressure", "rh", "temp", "dew", "rain"]
+
+# Sensor bounds for validation (keys match sensors.columns)
 sensor_bounds:
-  temperature:
-    min: -40.0   # °C (extreme cold)
-    max: 60.0    # °C (extreme heat)
-  humidity:
-    min: 0.0     # %RH
-    max: 100.0   # %RH
+  ws:
+    min: 0.0
+    max: 120.0
+  wd:
+    min: 0.0
+    max: 360.0
   pressure:
-    min: 800.0   # hPa
-    max: 1100.0  # hPa
+    min: 800.0
+    max: 1100.0
+  rh:
+    min: 0.0
+    max: 100.0
+  temp:
+    min: -40.0
+    max: 55.0
+  dew:
+    min: -50.0
+    max: 50.0
+  rain:
+    min: 0.0
+    max: 500.0
 
 # Rolling window for feature engineering
 feature_engineering:
-  rolling_window: 5
+  rolling_window: 6
 
 # Filter parameters
 filtering:
   median_window: 5
   kalman:
-    # Base values; adaptive filter auto-adjusts Q/R based on variance
     process_variance: 0.01
     measurement_variance: 0.5
     estimated_error: 1.0
+
+# Ingestion: Google Sheet as CSV over HTTP (not the /edit browser URL).
+# Publish or link sharing must allow anonymous download.
+# GOOGLE_SHEETS_CSV_URL overrides csv_export_url; do not use a literal "..." placeholder there (404).
+# IITM_LARUS — tab Sheet1 gid=0:
+ingestion:
+  csv_export_url: "https://docs.google.com/spreadsheets/d/1C8gCSuv0S7vOiLFhqwwZffcU1GYHkBZjr6cncxXOAEo/export?format=csv&gid=0"
+  interval_seconds: 60
+  # When true, each successful sheet fetch overwrites master_sensor_data.csv (matches sheet).
+  # When false, new rows are merged with the existing master (legacy append).
+  replace_master_from_sheet: true
 
 # Model parameters
 model:
@@ -33,31 +58,64 @@ model:
     contamination: 0.04
     random_state: 42
   z_score:
-    threshold: 3.0   # standard deviations
+    threshold: 3.0
   seasonal_decomposition:
-    period: 24       # hourly seasonality (change for different granularity)
-    model: additive  # additive | multiplicative
+    # One day of 1-minute samples (daily seasonality)
+    period: 1440
+    model: additive
 
 # Hybrid Prediction (SARIMA + LSTM ensemble)
+# Toggle forecasters for comparison runs:
+#   SARIMA-only: use_sarima: true,  use_lstm: false
+#   LSTM-only:   use_sarima: false, use_lstm: true
+#   Hybrid:      use_sarima: true,  use_lstm: true
 prediction:
-  horizon: 5
-  sarima_order: [1, 1, 1]
-  seasonal_order: [1, 1, 1, 24]
+  use_sarima: true
+  use_lstm: true
+  horizon: 6
+  primary_sensor: temp
+  sarima_order: [0, 1, 1]
+  # Target: one day at 1-minute cadence (m=1440). Actual m is capped so length >= sarima_min_seasons * m.
+  # Development-lean seasonal dynamics (lighter than full seasonal ARMA).
+  seasonal_order: [0, 1, 1, 60]
+  sarima_min_seasons: 24
+  # SARIMAX optimizer: heartbeat logs every N seconds during long fits (0 = off).
+  sarima_heartbeat_seconds: 60
+  sarima_maxiter: 10
+  sarima_disp: false
+  # Smaller refits inside the rolling loop (short windows).
+  sarima_refit_maxiter: 10
+  sarima_refit_window_rows: 360
+  sarima_train_tail_rows: 1500
   lstm:
-    epochs: 10
-    batch_size: 32
-    lookback: 20
+    epochs: 35
+    batch_size: 16
+    lookback: 48
+    patience: 4
   ensemble_weights:
-    sarima: 0.5
-    lstm: 0.5
+    sarima: 0.45
+    lstm: 0.55
+    sarima_other: 0.15
+    lstm_other: 0.85
+  split_weights_by_primary: true
   forecast_error_threshold: 2.5
-  error_window: 20   # Rolling window for forecast error mean/std
+  forecast_error_mode: adaptive
+  forecast_error_k: 3.0
+  forecast_error_warmup_rows: 48
+  error_window: 30
+  history_limit: 360
+  sarima_refit_interval: 30
+  max_fast_forecast_rows: 120
+  # Non-fast runs: only roll 1-step forecasts over the last N rows (then ffill earlier rows).
+  # Full O(n) rolling is very slow (SARIMA + LSTM per row). Set to 0 to evaluate every row.
+  rolling_forecast_tail_rows: 600
+  rolling_log_interval: 100
 
 # Drift detection (Kolmogorov-Smirnov test)
 drift:
   p_value_threshold: 0.05
-  baseline_window: 100   # rows for baseline distribution
-  comparison_window: 50  # rolling window to compare against baseline
+  baseline_window: 120
+  comparison_window: 60
 
 # Paths
 paths:
@@ -66,6 +124,12 @@ paths:
   output_csv: "output/anomaly_results.csv"
   invalid_log: "logs/invalid_rows.log"
 
-# Alert service
+# Alert service (Gmail SMTP)
+# Prefer env vars in production: ALERT_SENDER_EMAIL, EMAIL_APP_PASSWORD, ALERT_RECEIVER_EMAILS
 alerts:
-  slack_webhook_url: ""  # Set SLACK_WEBHOOK_URL env var or add URL here
+  sender_email: "sarthaksjoshi2004@gmail.com"
+  sender_password: "yceg iomr dmdv exsf"
+  receiver_emails: ["18sarthakjoshi@gmail.com", "vedangkane@gmail.com", "anuthakurdas01@gmail.com"]
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  min_anomalies: 1

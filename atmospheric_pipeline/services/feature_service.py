@@ -5,19 +5,28 @@ Rolling mean, std, skew, kurtosis, gradient, energy metrics.
 """
 
 import logging
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
+from services.pipeline_schema import sensor_base_columns
+
 logger = logging.getLogger(__name__)
+
+
+def _pick_feature_col(df: pd.DataFrame, base: str) -> Optional[str]:
+    for name in (f"{base}_mean", f"{base}_filt", base):
+        if name in df.columns:
+            return name
+    return None
 
 
 def run_feature_engineering(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     """
     Extract temporal and statistical features from filtered sensor data.
 
-    Uses columns: temperature_filt, humidity_filt, pressure_filt (or temperature, etc.)
-    Configurable rolling window from config.yaml.
+    Uses filtered columns when present (see sensors.columns in config).
 
     Args:
         df: Filtered DataFrame
@@ -32,9 +41,8 @@ def run_feature_engineering(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     cfg = config.get("feature_engineering", {})
     window = cfg.get("rolling_window", 5)
 
-    # Use filtered columns if available, else raw
     base_cols = []
-    for col in ["temperature", "humidity", "pressure"]:
+    for col in sensor_base_columns(config):
         if f"{col}_filt" in df.columns:
             base_cols.append(f"{col}_filt")
         elif col in df.columns:
@@ -62,10 +70,10 @@ def run_feature_engineering(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         delta = result[col].diff()
         result[f"{prefix}_energy"] = (delta ** 2).rolling(window).mean()
 
-    # Composite ratios
-    t_col = next((c for c in ["temperature_mean", "temperature_filt", "temperature"] if c in result.columns), None)
-    h_col = next((c for c in ["humidity_mean", "humidity_filt", "humidity"] if c in result.columns), None)
-    p_col = next((c for c in ["pressure_mean", "pressure_filt", "pressure"] if c in result.columns), None)
+    # Composite ratios (when temp / rh / pressure features exist)
+    t_col = _pick_feature_col(result, "temp")
+    h_col = _pick_feature_col(result, "rh")
+    p_col = _pick_feature_col(result, "pressure")
     if t_col and h_col:
         result["temp_rh_ratio"] = result[t_col] / (result[h_col] + 1e-6)
     if t_col and p_col:

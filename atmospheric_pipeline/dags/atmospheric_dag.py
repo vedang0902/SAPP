@@ -2,7 +2,7 @@
 Airflow DAG - Atmospheric Monitoring Pipeline
 ---------------------------------------------
 TaskFlow API - each service as separate task.
-Daily schedule (configurable to hourly).
+Runs every 15 minutes.
 """
 
 from datetime import datetime, timedelta
@@ -28,8 +28,9 @@ import pandas as pd
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
     },
-    schedule="@daily",  # Change to "@hourly" for hourly runs
+    schedule="*/15 * * * *",  # Run every 15 minutes
     catchup=False,
+    max_active_runs=1,
     tags=["atmospheric", "monitoring", "anomaly"],
 )
 def atmospheric_dag():
@@ -37,17 +38,13 @@ def atmospheric_dag():
 
     @task
     def ingestion_task():
-        from services.ingestion_service import run_ingestion
+        from services.ingestion_service import run_ingestion, load_master_data
         from main_pipeline import load_config, PROJECT_ROOT
         config = load_config()
         df = run_ingestion(config, str(PROJECT_ROOT))
         if df.empty:
-            # Load from master as fallback
-            master = PROJECT_ROOT / config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
-            if master.exists():
-                df = pd.read_csv(master)
-                df.columns = df.columns.str.strip().str.lower()
-                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            master_rel = config.get("paths", {}).get("master_csv", "data/master_sensor_data.csv")
+            df = load_master_data(master_rel, str(PROJECT_ROOT), config)
         return df.to_json(date_format="iso") if not df.empty else "{}"
 
     @task
@@ -103,7 +100,8 @@ def atmospheric_dag():
         if seasonal_json == "{}":
             return "{}"
         df = pd.read_json(seasonal_json)
-        df = run_prediction_service(df, config, PROJECT_ROOT)
+        # Use the responsive prediction path for frequent scheduled DAG runs.
+        df = run_prediction_service(df, config, PROJECT_ROOT, fast_mode=True)
         return df.to_json(date_format="iso") if not df.empty else "{}"
 
     @task
@@ -130,12 +128,13 @@ def atmospheric_dag():
 
     @task
     def output_task(drift_json: str):
-        from main_pipeline import load_config, save_output, PROJECT_ROOT
+        from main_pipeline import load_config, save_output, write_metrics_snapshot, PROJECT_ROOT
         config = load_config()
         if drift_json == "{}":
             return 0
         df = pd.read_json(drift_json)
         save_output(df, config)
+        write_metrics_snapshot(df, PROJECT_ROOT)
         return len(df)
 
     @task
