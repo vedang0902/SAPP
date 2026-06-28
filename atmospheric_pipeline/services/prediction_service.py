@@ -433,6 +433,16 @@ def _fast_window_baseline(window_df: pd.DataFrame, sensor_cols: list, tail_size:
 # ---------------------------------------------------------------------------
 # Hybrid Ensemble and Forecast Error
 # ---------------------------------------------------------------------------
+def _forecast_mode_label(use_sarima: bool, use_lstm: bool) -> str:
+    if use_sarima and use_lstm:
+        return "hybrid"
+    if use_sarima:
+        return "SARIMA-only"
+    if use_lstm:
+        return "LSTM-only"
+    return "none"
+
+
 def _ensemble_predict(
     sarima_pred: float,
     lstm_pred: np.ndarray,
@@ -505,10 +515,17 @@ def run_prediction_service(
         project_root = _get_project_root()
 
     pred_cfg = config.get("prediction", {})
+    use_sarima = bool(pred_cfg.get("use_sarima", True))
+    use_lstm_cfg = bool(pred_cfg.get("use_lstm", pred_cfg.get("train_lstm", True)))
+    if not use_sarima and not use_lstm_cfg:
+        logger.error(
+            "Prediction disabled: set at least one of prediction.use_sarima or prediction.use_lstm to true"
+        )
+        return df.copy()
     horizon = pred_cfg.get("horizon", 5)
     sarima_order = tuple(pred_cfg.get("sarima_order", [1, 1, 1]))
     seasonal_order = tuple(pred_cfg.get("seasonal_order", [1, 1, 1, 24]))
-    if len(seasonal_order) == 4:
+    if use_sarima and len(seasonal_order) == 4:
         m_cfg = int(seasonal_order[3])
         min_seasons = int(pred_cfg.get("sarima_min_seasons", 10))
         m_eff = capped_sarima_seasonal_m(m_cfg, len(df), min_seasons=min_seasons)
@@ -541,8 +558,10 @@ def run_prediction_service(
         (c for c in sensor_cols if c.replace("_filt", "") == primary_base),
         sensor_cols[0],
     )
+    mode_label = _forecast_mode_label(use_sarima, use_lstm_cfg)
     logger.info(
-        "Hybrid prediction: n_rows=%d sensor_cols=%s primary=%s fast_mode=%s",
+        "%s prediction: n_rows=%d sensor_cols=%s primary=%s fast_mode=%s",
+        mode_label,
         len(df),
         sensor_cols,
         primary_col,
@@ -558,7 +577,7 @@ def run_prediction_service(
         _remove_cached_forecast_models(models_dir)
 
     drift_retrain = _check_drift_triggered(project_root)
-    use_lstm = bool(pred_cfg.get("train_lstm", True)) and (not fast_mode)
+    use_lstm = use_lstm_cfg and (not fast_mode)
     if drift_retrain:
         logger.info("Drift trigger detected - retraining prediction models")
         _clear_drift_flag(project_root)
@@ -566,7 +585,9 @@ def run_prediction_service(
         drift_retrain = False
 
     train_forecasters = drift_retrain or schema_stale
-    train_sarima = train_forecasters or not (models_dir / "sarima_fitted.pkl").exists()
+    train_sarima = use_sarima and (
+        train_forecasters or not (models_dir / "sarima_fitted.pkl").exists()
+    )
     train_lstm = use_lstm and (train_forecasters or not (models_dir / "lstm_model.keras").exists())
 
     total_training_time = 0.0
@@ -578,10 +599,12 @@ def run_prediction_service(
     sarima_refit_window_rows = int(pred_cfg.get("sarima_refit_window_rows", 360))
     sarima_train_tail_rows = int(pred_cfg.get("sarima_train_tail_rows", 0))
 
-    # SARIMA: univariate on configured primary sensor
+    # SARIMA: univariate on configured primary sensor (skipped when use_sarima=false)
     sarima_fitted = None
 
-    if train_sarima:
+    if not use_sarima:
+        logger.info("SARIMA disabled (prediction.use_sarima=false)")
+    elif train_sarima:
         series_for_fit = df[primary_col]
         if sarima_train_tail_rows > 0:
             series_for_fit = series_for_fit.iloc[-sarima_train_tail_rows:]
@@ -610,7 +633,7 @@ def run_prediction_service(
         sarima_dt = time.perf_counter() - t0
         total_training_time += sarima_dt
         logger.info("SARIMA step wall time (fit + save): %.2f s", sarima_dt)
-    else:
+    elif use_sarima:
         logger.info("Loading cached SARIMA from %s", models_dir / "sarima_fitted.pkl")
         try:
             import joblib
@@ -627,6 +650,9 @@ def run_prediction_service(
                 log_label="SARIMAX(fallback-load)",
             )
 
+    if use_sarima and not use_lstm and sarima_fitted is None:
+        logger.error("SARIMA-only mode enabled but SARIMA is unavailable; forecasts will be empty")
+
     # LSTM: multivariate
     lstm_path = models_dir / "lstm_model.keras"
     scaler_params = None
@@ -638,7 +664,9 @@ def run_prediction_service(
             pass
 
     lstm_model = None
-    if train_lstm:
+    if not use_lstm:
+        logger.info("LSTM disabled (prediction.use_lstm=false)")
+    elif train_lstm:
         logger.info("Training LSTM (train_lstm=True)")
         t0 = time.perf_counter()
         lstm_model, scaler_params = _fit_lstm(
@@ -653,7 +681,12 @@ def run_prediction_service(
             except Exception as e:
                 logger.warning("Could not save LSTM scaler: %s", e)
         if lstm_model is None:
-            logger.warning("LSTM requested but unavailable after training attempt; continuing with SARIMA-only forecasts")
+            if use_sarima:
+                logger.warning(
+                    "LSTM enabled but unavailable after training attempt; continuing with SARIMA-only forecasts"
+                )
+            else:
+                logger.error("LSTM-only mode enabled but LSTM training failed; forecasts will be empty")
         logger.info("LSTM step wall time (train + save): %.2f s", lstm_dt)
     elif use_lstm:
         logger.info("Loading cached LSTM from %s", lstm_path)
@@ -663,7 +696,7 @@ def run_prediction_service(
         lstm_model = _load_lstm_model(lstm_path)
 
     # Rolling forecast: refit SARIMA every REFIT_INTERVAL steps for accuracy/speed balance
-    REFIT_INTERVAL = int(pred_cfg.get("sarima_refit_interval", 25))
+    REFIT_INTERVAL = int(pred_cfg.get("sarima_refit_interval", 25)) if use_sarima else 0
     if fast_mode:
         REFIT_INTERVAL = 0
     result = df.copy()
@@ -677,7 +710,12 @@ def run_prediction_service(
     for col in pred_columns:
         result[col] = np.nan
 
-    train_size = max(lookback + horizon, 2 * (seasonal_order[-1] if seasonal_order else 24))
+    if use_sarima and seasonal_order:
+        train_size = max(lookback + horizon, 2 * seasonal_order[-1])
+    elif use_lstm:
+        train_size = lookback + horizon
+    else:
+        train_size = max(30, lookback + horizon)
     train_size = min(train_size, n - 1)
     forecast_start = train_size
     if fast_mode:
@@ -696,7 +734,8 @@ def run_prediction_service(
 
     n_steps = max(0, n - forecast_start)
     logger.info(
-        "Rolling hybrid forecast: %d row-indices (%d..%d); refit_interval=%s; LSTM=%s",
+        "Rolling %s forecast: %d row-indices (%d..%d); refit_interval=%s; LSTM=%s",
+        mode_label,
         n_steps,
         forecast_start,
         n - 1,
@@ -720,7 +759,7 @@ def run_prediction_service(
         baseline_pred = _fast_window_baseline(window, sensor_cols) if fast_mode else None
         # SARIMA: refit periodically for rolling window accuracy
         sarima_pred_val = None
-        if sarima_fitted is not None:
+        if use_sarima and sarima_fitted is not None:
             try:
                 pred, _, _ = _forecast_sarima(sarima_fitted, 1)
                 if pred is not None and len(pred) > 0:
@@ -753,7 +792,13 @@ def run_prediction_service(
                 weight_keys = ("sarima_other", "lstm_other")
             if fast_mode and baseline_pred is not None and not np.isnan(baseline_pred[j]):
                 pred_val = float(baseline_pred[j])
-                if j == 0 and sarima_pred_val is not None and not np.isnan(sarima_pred_val):
+                if (
+                    use_sarima
+                    and use_lstm_cfg
+                    and j == 0
+                    and sarima_pred_val is not None
+                    and not np.isnan(sarima_pred_val)
+                ):
                     pred_val = _ensemble_predict(
                         sarima_pred_val,
                         baseline_pred,
@@ -809,7 +854,7 @@ def run_prediction_service(
         logger.info("Prediction metrics: RMSE=%.4f, MAE=%.4f, Forecast variance=%.4f, Training=%.2fs", rmse, mae, fcast_var, total_training_time)
         _log_metrics(rmse, mae, fcast_var, total_training_time)
 
-    if (models_dir / "sarima_fitted.pkl").exists():
+    if (models_dir / "lstm_model.keras").exists() or (models_dir / "sarima_fitted.pkl").exists():
         _write_training_manifest(models_dir, sensor_cols, primary_base)
 
     return result

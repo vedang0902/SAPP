@@ -65,7 +65,13 @@ model:
     model: additive
 
 # Hybrid Prediction (SARIMA + LSTM ensemble)
+# Toggle forecasters for comparison runs:
+#   SARIMA-only: use_sarima: true,  use_lstm: false
+#   LSTM-only:   use_sarima: false, use_lstm: true
+#   Hybrid:      use_sarima: true,  use_lstm: true
 prediction:
+  use_sarima: true
+  use_lstm: true
   horizon: 6
   primary_sensor: temp
   sarima_order: [0, 1, 1]
@@ -80,7 +86,6 @@ prediction:
   # Smaller refits inside the rolling loop (short windows).
   sarima_refit_maxiter: 10
   sarima_refit_window_rows: 360
-  train_lstm: true
   sarima_train_tail_rows: 1500
   lstm:
     epochs: 35
@@ -119,6 +124,12 @@ paths:
   output_csv: "output/anomaly_results.csv"
   invalid_log: "logs/invalid_rows.log"
 
-# Alert service
+# Alert service (Gmail SMTP)
+# Prefer env vars in production: ALERT_SENDER_EMAIL, EMAIL_APP_PASSWORD, ALERT_RECEIVER_EMAILS
 alerts:
-  slack_webhook_url: ""
+  sender_email: "sarthaksjoshi2004@gmail.com"
+  sender_password: "yceg iomr dmdv exsf"
+  receiver_emails: ["18sarthakjoshi@gmail.com", "vedangkane@gmail.com", "anuthakurdas01@gmail.com"]
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  min_anomalies: 1

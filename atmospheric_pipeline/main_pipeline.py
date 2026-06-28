@@ -76,6 +76,8 @@ DEFAULT_CONFIG = {
         "seasonal_decomposition": {"period": 1440, "model": "additive"},
     },
     "prediction": {
+        "use_sarima": True,
+        "use_lstm": True,
         "horizon": 6,
         "primary_sensor": "temp",
         "sarima_order": [0, 1, 1],
@@ -86,7 +88,6 @@ DEFAULT_CONFIG = {
         "sarima_disp": False,
         "sarima_refit_maxiter": 10,
         "sarima_refit_window_rows": 360,
-        "train_lstm": True,
         "sarima_train_tail_rows": 1500,
         "lstm": {"epochs": 35, "batch_size": 16, "lookback": 48, "patience": 4},
         "ensemble_weights": {
@@ -115,7 +116,14 @@ DEFAULT_CONFIG = {
         "output_csv": "output/anomaly_results.csv",
         "invalid_log": "logs/invalid_rows.log",
     },
-    "alerts": {"slack_webhook_url": ""},
+    "alerts": {
+        "sender_email": "sarthaksjoshi2004@gmail.com",
+        "sender_password": "yceg iomr dmdv exsf",
+        "receiver_emails": ["18sarthakjoshi@gmail.com", "vedangkane@gmail.com", "anuthakurdas01@gmail.com"],
+        "smtp_host": "smtp.gmail.com",
+        "smtp_port": 587,
+        "min_anomalies": 1,
+    },
 }
 
 

@@ -4,6 +4,13 @@
 
 version: "3.8"
 
+x-alert-email-env: &alert-email-env
+  ALERT_SENDER_EMAIL: ${ALERT_SENDER_EMAIL:-}
+  ALERT_RECEIVER_EMAILS: ${ALERT_RECEIVER_EMAILS:-}
+  EMAIL_APP_PASSWORD: ${EMAIL_APP_PASSWORD:-}
+  ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-smtp.gmail.com}
+  ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-587}
+
 services:
   atmospheric_app:
     build: .
@@ -16,11 +23,8 @@ services:
       - ./logs:/app/logs
       - ./models:/app/models
     environment:
-      - GOOGLE_SHEETS_CSV_URL=${GOOGLE_SHEETS_CSV_URL:-}
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
-      - EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD:-}
-      - ALERT_SENDER_EMAIL=${ALERT_SENDER_EMAIL:-}
-      - ALERT_RECEIVER_EMAILS=${ALERT_RECEIVER_EMAILS:-}
+      <<: *alert-email-env
+      GOOGLE_SHEETS_CSV_URL: ${GOOGLE_SHEETS_CSV_URL:-}
 
   # Airflow init: initialize DB and create admin user (runs once, then exits)
   airflow-init:
@@ -73,10 +77,11 @@ services:
       context: .
       dockerfile: Dockerfile.airflow
     environment:
-      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
-      - AIRFLOW__CORE__LOAD_EXAMPLES=False
-      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      <<: *alert-email-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
     volumes:
       - ./dags:/opt/airflow/dags
       - .:/opt/airflow/atmospheric_pipeline

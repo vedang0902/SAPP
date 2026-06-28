@@ -106,7 +106,7 @@ Edit `config.yaml` for:
 - **Prediction**: SARIMA order, LSTM (epochs, lookback), ensemble weights, forecast error threshold
 - KS p-value threshold for drift
 - Paths (input stream, master CSV, output, logs)
-- Slack webhook URL (or set `SLACK_WEBHOOK_URL` env var)
+- **Alerts**: Gmail SMTP settings (`sender_email`, `receiver_emails`, `smtp_host`, `smtp_port`, `min_anomalies`) or env vars `ALERT_SENDER_EMAIL`, `EMAIL_APP_PASSWORD`, `ALERT_RECEIVER_EMAILS`
 
 ## OpenWebUI RAG Integration
 
